@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+.env
+venv/
+.env.*
+.idea/
+.DS_Store
+.gcloud/
+application_default_credentials.json

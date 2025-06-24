@@ -1,0 +1,9 @@
+quart
+aiohttp
+PyPDF2
+reportlab
+google-cloud-secret-manager
+google-cloud-firestore
+uvicorn
+python-dateutil
+cryptography
