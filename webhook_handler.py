@@ -11,7 +11,7 @@ import logging
 
 app = Quart(__name__)
 
-# Set up logging
+# Set up logging#
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s %(levelname)s:%(message)s')
 logging.getLogger('quart.app').setLevel(logging.DEBUG)
 logging.getLogger('quart.serving').setLevel(logging.DEBUG)
