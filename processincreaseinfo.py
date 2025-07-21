@@ -478,16 +478,13 @@ async def download_file(headers, file_id):
             async with session.get(download_url) as file_response:
                 if file_response.status != 200:
                     raise Exception(f"Failed to download file: {file_response.status} {await file_response.text()}")
-                content = await file_response.read()
 
-        # 3. Save the file as \tmp\N1.pdf
-        os.makedirs("\\tmp", exist_ok=True)
-        file_path = os.path.join("\\tmp", "N1.pdf")
-        async with aiofiles.open(file_path, 'wb') as out_file:
-            await out_file.write(content)
+                # 3. Save the file as \tmp\N1.pdf
+                full_file_path = '\\tmp\\N1.pdf'
 
-        print(f"Downloaded file saved to {file_path}")
-        return file_path
+                # Write the downloaded file to /tmp
+                with open(full_file_path, 'wb') as f:
+                    f.write(await file_response.read())
 
     except Exception as e:
         print(f"Download failed: {e}")
