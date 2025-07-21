@@ -127,7 +127,7 @@ async def generateN1files(leaseid, leasedata):
 async def uploadN1filestolease(headers, filepath, leaseid, session, categoryid):
     logging.info(f"Uploading N1 File to Lease {leaseid}")
 
-    base_path, filename = filepath.split("\\tmp\\", 1)
+    base_path, filename = filepath.split("/tmp/", 1)
 
     # # Prepare the URL to request the file upload instructions
     # try:
@@ -189,7 +189,7 @@ async def uploadsummarytotask(headers, filepath, taskid, session, categoryid):
 
     try:
         # Split the filepath to extract the filename after '\\tmp\\'
-        base_path, filename = filepath.split("\\tmp\\", 1)
+        base_path, filename = filepath.split("/tmp/", 1)
 
         # Fetch task history to get the latest task history ID
         urltaskhistory = f"https://api.buildium.com/v1/tasks/{taskid}/history"
@@ -570,7 +570,7 @@ async def process(headers, increaseinfo, accountid):
                             # add to in‐memory summary
                             ok = await addtosummary(
                                 os.path.join(
-                                    '\\tmp',
+                                    '/tmp',
                                     f"Notices for {buildingname} {datelabel} Part {summary_index}.pdf"
                                 ),
                                 filepath,
@@ -582,7 +582,7 @@ async def process(headers, increaseinfo, accountid):
                                 summary_index += 1
                                 ok = await addtosummary(
                                     os.path.join(
-                                        '\\tmp',
+                                        '/tmp',
                                         f"Notices for {buildingname} {datelabel}.pdf"
                                     ),
                                     filepath,
@@ -619,7 +619,7 @@ async def process(headers, increaseinfo, accountid):
                     if summary_data and not ignore_building:
                         # recompute the exact filename of our PDF
                         summary_file_path = os.path.join(
-                            '\\tmp',
+                            '/tmp',
                             f"Notices for {buildingname} {datelabel} Part {summary_index}.pdf"
                         )
 
