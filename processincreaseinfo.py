@@ -476,7 +476,7 @@ async def download_file(headers, file_id):
                     print(f"Error downloading file: {await file_response.text()}")
                     return None
 
-                full_file_path = '/tmp/N1.pdf'
+                file_path = '/tmp/N1.pdf'
                 os.makedirs(os.path.dirname(file_path), exist_ok=True)
 
                 async with aiofiles.open(file_path, 'wb') as f:
