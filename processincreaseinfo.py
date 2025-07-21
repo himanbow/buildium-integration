@@ -456,10 +456,6 @@ async def addtosummary(summary_file_path, filepath, summary_writer):
         logging.error(f"Error adding to summary: {e}")
         return False
 
-import aiohttp
-import aiofiles
-import os
-
 async def download_file(headers, file_id):
     try:
         url = f"https://api.buildium.com/v1/files/{file_id}/downloadrequest"
@@ -480,7 +476,7 @@ async def download_file(headers, file_id):
                     print(f"Error downloading file: {await file_response.text()}")
                     return None
 
-                file_path = '\\tmp\\N1.pdf'
+                full_file_path = '/tmp/N1.pdf'
                 os.makedirs(os.path.dirname(file_path), exist_ok=True)
 
                 async with aiofiles.open(file_path, 'wb') as f:
