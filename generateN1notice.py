@@ -89,9 +89,9 @@ async def create(leaseid, data):
     datename = datetime.datetime.strptime(data['increasedate'], "%Y-%m-%d")
     datename = datename.strftime("%B %d, %Y")
     # Input paths and temporary paths
-    input_pdf_path = '\\tmp\\N1.pdf'
-    overlay_pdf_path = f'\\tmp\\N1 for Apartment {address} Effective {datename}_overlay.pdf'
-    output_pdf_path = f'\\tmp\\N1 for Apartment {address} Effective {datename}.pdf'
+    input_pdf_path = '\tmp\N1.pdf'
+    overlay_pdf_path = f'\tmp\N1 for Apartment {address} Effective {datename}_overlay.pdf'
+    output_pdf_path = f'\tmp\N1 for Apartment {address} Effective {datename}.pdf'
 
     # Create the overlay with text at specified coordinates
     create_text_overlay(data, overlay_pdf_path)
