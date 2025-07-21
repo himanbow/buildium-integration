@@ -235,7 +235,7 @@ async def uploadsummarytotask(headers, filepath, taskid, session, categoryid):
     return True  # Default return for successful execution
 
 async def leaserenewalingored(headers, leaseid, lease, session):
-    logging.info(f"Processing ignored leases")
+        logging.info(f"Processing ignored leases")
 
         url = f"https://api.buildium.com/v1/leases/{leaseid}"
         async with session.get(url, headers=headers) as response:
