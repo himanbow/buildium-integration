@@ -462,37 +462,35 @@ import os
 
 async def download_file(headers, file_id):
     try:
-        # 1. Request the download URL
         url = f"https://api.buildium.com/v1/files/{file_id}/downloadrequest"
 
-      try:
-                async with session.post(url, headers=headers) as response:
-                    if response.status != 201:
-                        print(f"Error requesting file download: {await response.text()}")
-                        return
+        async with aiohttp.ClientSession() as session:
+            # Step 1: Request download URL
+            async with session.post(url, headers=headers) as response:
+                if response.status != 201:
+                    print(f"Error requesting file download: {await response.text()}")
+                    return None
 
-                    downloadfileurldata = await response.json()
-                    downloadfileurl = downloadfileurldata['DownloadUrl']
-            except Exception as e:
-                logging.error(f"Error getting download url: {e}")
+                downloadfileurldata = await response.json()
+                downloadfileurl = downloadfileurldata['DownloadUrl']
 
-            # Now download the actual file from downloadfileurl
+            # Step 2: Download the actual file
             async with session.get(downloadfileurl) as file_response:
                 if file_response.status != 200:
                     print(f"Error downloading file: {await file_response.text()}")
-                    return
+                    return None
 
-                # Define the file path in /tmp
-                full_file_path = '\\tmp\\N1.pdf'
+                file_path = '\\tmp\\N1.pdf'
+                os.makedirs(os.path.dirname(file_path), exist_ok=True)
 
-                # Write the downloaded file to /tmp
-                with open(full_file_path, 'wb') as f:
-                    f.write(await file_response.read())
+                async with aiofiles.open(file_path, 'wb') as f:
+                    await f.write(await file_response.read())
 
-                print(f"File downloaded and saved to {full_file_path}")
+                print(f"File downloaded and saved to {file_path}")
+                return file_path
 
     except Exception as e:
-        print(f"Download failed: {e}")
+        logging.error(f"Download failed: {e}")
         return None
 
 
