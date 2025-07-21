@@ -189,7 +189,7 @@ async def uploadsummarytotask(headers, filepath, taskid, session, categoryid):
 
     try:
         # Split the filepath to extract the filename after '\\tmp\\'
-        base_path, filename = filepath.split("\\tmp\\", 1)
+        base_path, filename = filepath.split("\tmp\", 1)
 
         # Fetch task history to get the latest task history ID
         urltaskhistory = f"https://api.buildium.com/v1/tasks/{taskid}/history"
