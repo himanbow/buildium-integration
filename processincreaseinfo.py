@@ -1,3 +1,9 @@
+### TEMP Items for debugging summary issues
+#1) uploadN1filestolease - Commented
+#2) leaserenewalingored - Commented
+#3) leaserenewals - Commented
+#4) Added Lucas's Userid to createtask
+
 import aiohttp
 import logging
 import asyncio
@@ -121,53 +127,53 @@ async def uploadN1filestolease(headers, filepath, leaseid, session, categoryid):
 
     base_path, filename = filepath.split("\\tmp\\", 1)
 
-    # Prepare the URL to request the file upload instructions
-    try:
-        url = f"https://api.buildium.com/v1/files/uploadrequests"
-        data = {'FileName': filename}
+    # # Prepare the URL to request the file upload instructions
+    # try:
+    #     url = f"https://api.buildium.com/v1/files/uploadrequests"
+    #     data = {'FileName': filename}
 
-        body = {
-            "EntityType": "Lease",
-            "EntityId": leaseid,
-            "FileName": filename,
-            "Title": filename,
-            "CategoryId": categoryid
-            }
+    #     body = {
+    #         "EntityType": "Lease",
+    #         "EntityId": leaseid,
+    #         "FileName": filename,
+    #         "Title": filename,
+    #         "CategoryId": categoryid
+    #         }
 
-        # Post the file metadata to get upload instructions
-        async with session.post(url, json=body, headers=headers) as response:
-            if response.status != 201:
-                logging.info(f"Error while submitting file metadata: {await response.text()}")
-                return False  # Indicate failure
+    #     # Post the file metadata to get upload instructions
+    #     async with session.post(url, json=body, headers=headers) as response:
+    #         if response.status != 201:
+    #             logging.info(f"Error while submitting file metadata: {await response.text()}")
+    #             return False  # Indicate failure
 
-            # Get the response payload with upload instructions
-            payload = await response.json()
-            form_data, bucket_url = await amazondatalease(payload)
+    #         # Get the response payload with upload instructions
+    #         payload = await response.json()
+    #         form_data, bucket_url = await amazondatalease(payload)
 
-            # Read the file content asynchronously
-            async with aiofiles.open(filepath, 'rb') as file:
-                file_content = await file.read()
+    #         # Read the file content asynchronously
+    #         async with aiofiles.open(filepath, 'rb') as file:
+    #             file_content = await file.read()
 
-            # Add the file content to the form data
-            form_data.add_field("file", file_content, filename=filename, content_type='application/pdf')
+    #         # Add the file content to the form data
+    #         form_data.add_field("file", file_content, filename=filename, content_type='application/pdf')
 
-            # Upload the file to the S3 bucket
-            try:
-                async with session.post(bucket_url, data=form_data) as upload_response:
-                    if upload_response.status == 204:  # S3 usually responds with 204 No Content for successful uploads
-                        logging.info(f"Upload of Notice for {leaseid} successful.")
-                        return True  # Indicate success
-                    else:
-                        logging.info(f"Error Uploading Notice for {leaseid} failed: {upload_response.status} {await upload_response.text()}")
-                        return False  # Indicate failure
+    #         # Upload the file to the S3 bucket
+    #         try:
+    #             async with session.post(bucket_url, data=form_data) as upload_response:
+    #                 if upload_response.status == 204:  # S3 usually responds with 204 No Content for successful uploads
+    #                     logging.info(f"Upload of Notice for {leaseid} successful.")
+    #                     return True  # Indicate success
+    #                 else:
+    #                     logging.info(f"Error Uploading Notice for {leaseid} failed: {upload_response.status} {await upload_response.text()}")
+    #                     return False  # Indicate failure
 
-            except Exception as e:
-                logging.info(f"An error occurred uploading: {str(e)}")
-                return False  # Indicate failure
+    #         except Exception as e:
+    #             logging.info(f"An error occurred uploading: {str(e)}")
+    #             return False  # Indicate failure
 
-    except Exception as e:
-        logging.error(f"Error Uploading Summary to task: {e}")
-        return False  # Indicate failure
+    # except Exception as e:
+    #     logging.error(f"Error Uploading Summary to task: {e}")
+    #     return False  # Indicate failure
 
 
 
@@ -237,25 +243,25 @@ async def uploadsummarytotask(headers, filepath, taskid, session, categoryid):
 async def leaserenewalingored(headers, leaseid, lease, session):
 
 
-        url = f"https://api.buildium.com/v1/leases/{leaseid}"
-        async with session.get(url, headers=headers) as response:
-            data = await response.json()
-            date = datetime.strptime(data["LeaseToDate"], "%Y-%m-%d")
-            date = date + relativedelta(months=6)
-            date = date.strftime("%Y-%m-%d")
-            payloadstr = {
-                    "LeaseType": data["LeaseType"],
-                    "UnitId" : data['UnitId'],
-                    "LeaseFromDate" : data['LeaseFromDate'],
-                    "LeaseToDate": date,
-                    "IsEvictionPending": data['IsEvictionPending'],
-                }
+        # url = f"https://api.buildium.com/v1/leases/{leaseid}"
+        # async with session.get(url, headers=headers) as response:
+        #     data = await response.json()
+        #     date = datetime.strptime(data["LeaseToDate"], "%Y-%m-%d")
+        #     date = date + relativedelta(months=6)
+        #     date = date.strftime("%Y-%m-%d")
+        #     payloadstr = {
+        #             "LeaseType": data["LeaseType"],
+        #             "UnitId" : data['UnitId'],
+        #             "LeaseFromDate" : data['LeaseFromDate'],
+        #             "LeaseToDate": date,
+        #             "IsEvictionPending": data['IsEvictionPending'],
+        #         }
             
-            async with session.put(url, json=payloadstr, headers=headers) as response:
-                                if response.status == 200:  # S3 usually responds with 204 No Content for successful uploads
-                                    logging.info(f"Extention Completed for {leaseid}.")
-                                else:
-                                    logging.error(f"Error extending {leaseid}: {response.status} {await response.text()}")
+        #     async with session.put(url, json=payloadstr, headers=headers) as response:
+        #                         if response.status == 200:  # S3 usually responds with 204 No Content for successful uploads
+        #                             logging.info(f"Extention Completed for {leaseid}.")
+        #                         else:
+        #                             logging.error(f"Error extending {leaseid}: {response.status} {await response.text()}")
 
 async def setevictionstatus(leaseid, eviction, session, headers):
     print("test")
@@ -282,48 +288,48 @@ async def setevictionstatus(leaseid, eviction, session, headers):
 async def leaserenewals(headers, leaseid, lease, session):
     logging.info(f"Processing Lease Renewal for Lease {leaseid}")
 
-    url = f"https://api.buildium.com/v1/leases/{leaseid}/renewals"
+    # url = f"https://api.buildium.com/v1/leases/{leaseid}/renewals"
 
-    date = datetime.strptime(lease["LeaseToDate"], "%Y-%m-%d")
-    date = date + relativedelta(years=1) - timedelta(days=1)
-    date = date.strftime("%Y-%m-%d")
+    # date = datetime.strptime(lease["LeaseToDate"], "%Y-%m-%d")
+    # date = date + relativedelta(years=1) - timedelta(days=1)
+    # date = date.strftime("%Y-%m-%d")
     
     
-    if lease["RecurringChargesToStop"] is None:
-        payloadstr = {
-                "LeaseType": lease["LeaseType"],
-                "LeaseToDate": date,
-                "Rent": lease["Rent"],
-                "TenantIds": lease["TenantIds"],
-                "SendWelcomeEmail": "false",
-            }
-    else:
-        recurring_charges_list = [int(charge.strip()) for charge in lease["RecurringChargesToStop"].split(',')]
-        payloadstr = {
-                "LeaseType": lease["LeaseType"],
-                "LeaseToDate": date,
-                "Rent": lease["Rent"],
-                "TenantIds": lease["TenantIds"],
-                "SendWelcomeEmail": "false",
-                "RecurringChargesToStop": recurring_charges_list
-            }
-    print(payloadstr)
+    # if lease["RecurringChargesToStop"] is None:
+    #     payloadstr = {
+    #             "LeaseType": lease["LeaseType"],
+    #             "LeaseToDate": date,
+    #             "Rent": lease["Rent"],
+    #             "TenantIds": lease["TenantIds"],
+    #             "SendWelcomeEmail": "false",
+    #         }
+    # else:
+    #     recurring_charges_list = [int(charge.strip()) for charge in lease["RecurringChargesToStop"].split(',')]
+    #     payloadstr = {
+    #             "LeaseType": lease["LeaseType"],
+    #             "LeaseToDate": date,
+    #             "Rent": lease["Rent"],
+    #             "TenantIds": lease["TenantIds"],
+    #             "SendWelcomeEmail": "false",
+    #             "RecurringChargesToStop": recurring_charges_list
+    #         }
+    # print(payloadstr)
         
-    async with session.post(url, json=payloadstr, headers=headers) as response:
-                    if response.status == 201:
-                        logging.info(f"Renewal Completed for {leaseid}.")
-                    if response.status == 409:
-                        check = False
-                        check = await setevictionstatus(leaseid, check, session, headers)
-                        if check:  # No need to use await since 'check' is a boolean
-                            await leaserenewals(headers, leaseid, lease, session)
-                            # Reset eviction status after successful renewal
-                            await setevictionstatus(leaseid, False, session, headers)
+    # async with session.post(url, json=payloadstr, headers=headers) as response:
+    #                 if response.status == 201:
+    #                     logging.info(f"Renewal Completed for {leaseid}.")
+    #                 if response.status == 409:
+    #                     check = False
+    #                     check = await setevictionstatus(leaseid, check, session, headers)
+    #                     if check:  # No need to use await since 'check' is a boolean
+    #                         await leaserenewals(headers, leaseid, lease, session)
+    #                         # Reset eviction status after successful renewal
+    #                         await setevictionstatus(leaseid, False, session, headers)
 
                             
 
-                    else:
-                        logging.error(f"Error renewing {leaseid}: {response.status} {await response.text()}")
+    #                 else:
+    #                     logging.error(f"Error renewing {leaseid}: {response.status} {await response.text()}")
 
 async def createtask(headers, buildingid, session, date):
     """Create a task for delivering increase notices for a given building."""
@@ -342,6 +348,9 @@ async def createtask(headers, buildingid, session, date):
 
             useriddata = await response.json()
             userid = useriddata.get('RentalManager', {}).get('Id')
+
+### Added Lucas's User ID
+            userid = 352081
             buildingname = useriddata.get('Name')
 
             # Fetch task categories
@@ -566,6 +575,8 @@ async def process(headers, increaseinfo, accountid):
                         )
 
                         # add the final summary page
+                        logging.info(f"Summary data count: {len(summary_data)}")
+                        logging.info("Calling add_summary_page")
                         await add_summary_page(
                             summary_data,
                             summary_writer,
