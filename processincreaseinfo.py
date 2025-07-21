@@ -460,6 +460,7 @@ async def process(headers, increaseinfo, accountid):
     countall = 0
     check = False
     datelabel = ""
+    logging.info("Starting to process increase renewals")
 
     """Main process handling the creation, merging, uploading, and cleanup of PDFs."""
     try:
@@ -467,6 +468,7 @@ async def process(headers, increaseinfo, accountid):
 
             for buildingdata in increaseinfo:
                 for buildingid, data in buildingdata.items():
+                    logging.info(f"Processing Building ID {buildingid} increase renewals.")
 
                     # pull the ignore‐building flag
                     ignore_building = (data.get('ignorebuilding') == "Y")
@@ -479,10 +481,12 @@ async def process(headers, increaseinfo, accountid):
 
                     if not data['lease_info']:
                         # nothing at all to do
+                        logging.info(f"No Renewals for Building ID {buildingid}.")
                         continue
 
                     # grab the human name
                     buildingname = data['lease_info'][0]['buildingname']
+                    (f"Data grabbed for Building ID {buildingid} increase renewals.")
 
                     # determine if there is at least one lease NOT ignored
                     has_active = any(lease['ignored'] != "Y"
@@ -494,6 +498,7 @@ async def process(headers, increaseinfo, accountid):
                         taskid = await createtask(
                             headers, buildingid, session, datelabel
                         )
+                        logging.info(f"Task created for Building ID {buildingid}.")
 
                     # this bit only needs to run once (to get category + datelabel)
                     if not check:
@@ -504,12 +509,15 @@ async def process(headers, increaseinfo, accountid):
                             headers, session, datelabel
                         )
                         check = True
+                        logging.info(f"Category ID set to {categoryid}.")
 
                     # now per‐lease work
                     for lease in data['lease_info']:
                         leaseid = lease['leaseid']
+                        logging.info(f"Processing Renewal for {leaseid}.")
 
                         if lease['ignored'] != "Y":
+                            logging.info(f"Processing Increase Renewal for {leaseid}.")
                             # active‐lease path → generate & upload N1 + summary
                             leaseincreaseinfo = lease['increasenotice']
                             leaserenewalinfo  = lease['renewal']
@@ -563,6 +571,7 @@ async def process(headers, increaseinfo, accountid):
                             )
                         else:
                             # ignored‐lease path → only renewal‐ignored hook
+                            logging.info(f"Processing Non-Increase Renewal for {leaseid}.")
                             await leaserenewalingored(
                                 headers, leaseid, lease, session
                             )
