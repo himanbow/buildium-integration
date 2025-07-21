@@ -456,10 +456,52 @@ async def addtosummary(summary_file_path, filepath, summary_writer):
         logging.error(f"Error adding to summary: {e}")
         return False
 
+import aiohttp
+import aiofiles
+import os
+
+async def download_file(headers, file_id):
+    try:
+        file_id = 5422945
+        # 1. Request the download URL
+        url = f"https://api.buildium.com/v1/files/{file_id}/downloadrequest"
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, headers=headers) as response:
+                if response.status != 200:
+                    raise Exception(f"Failed to get download URL: {response.status} {await response.text()}")
+                data = await response.json()
+                download_url = data.get("DownloadUrl")
+                if not download_url:
+                    raise Exception("DownloadUrl missing in response")
+
+            # 2. Download the file from the returned URL
+            async with session.get(download_url) as file_response:
+                if file_response.status != 200:
+                    raise Exception(f"Failed to download file: {file_response.status} {await file_response.text()}")
+                content = await file_response.read()
+
+        # 3. Save the file as \tmp\N1.pdf
+        os.makedirs("\\tmp", exist_ok=True)
+        file_path = os.path.join("\\tmp", "N1.pdf")
+        async with aiofiles.open(file_path, 'wb') as out_file:
+            await out_file.write(content)
+
+        print(f"Downloaded file saved to {file_path}")
+        return file_path
+
+    except Exception as e:
+        print(f"Download failed: {e}")
+        return None
+
+
 async def process(headers, increaseinfo, accountid):
     countall = 0
     check = False
     datelabel = ""
+    logging.info("Downloading N1 File")
+    await download_file(headers, file_id)
+    
     logging.info("Starting to process increase renewals")
 
     """Main process handling the creation, merging, uploading, and cleanup of PDFs."""
