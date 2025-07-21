@@ -465,26 +465,31 @@ async def download_file(headers, file_id):
         # 1. Request the download URL
         url = f"https://api.buildium.com/v1/files/{file_id}/downloadrequest"
 
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, headers=headers) as response:
-                if response.status != 200:
-                    raise Exception(f"Failed to get download URL: {response.status} {await response.text()}")
-                data = await response.json()
-                download_url = data.get("DownloadUrl")
-                if not download_url:
-                    raise Exception("DownloadUrl missing in response")
+      try:
+                async with session.post(url, headers=headers) as response:
+                    if response.status != 201:
+                        print(f"Error requesting file download: {await response.text()}")
+                        return
 
-            # 2. Download the file from the returned URL
-            async with session.get(download_url) as file_response:
+                    downloadfileurldata = await response.json()
+                    downloadfileurl = downloadfileurldata['DownloadUrl']
+            except Exception as e:
+                logging.error(f"Error getting download url: {e}")
+
+            # Now download the actual file from downloadfileurl
+            async with session.get(downloadfileurl) as file_response:
                 if file_response.status != 200:
-                    raise Exception(f"Failed to download file: {file_response.status} {await file_response.text()}")
+                    print(f"Error downloading file: {await file_response.text()}")
+                    return
 
-                # 3. Save the file as \tmp\N1.pdf
+                # Define the file path in /tmp
                 full_file_path = '\\tmp\\N1.pdf'
 
                 # Write the downloaded file to /tmp
                 with open(full_file_path, 'wb') as f:
                     f.write(await file_response.read())
+
+                print(f"File downloaded and saved to {full_file_path}")
 
     except Exception as e:
         print(f"Download failed: {e}")
