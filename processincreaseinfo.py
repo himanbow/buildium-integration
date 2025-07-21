@@ -462,7 +462,6 @@ import os
 
 async def download_file(headers, file_id):
     try:
-        file_id = 5422945
         # 1. Request the download URL
         url = f"https://api.buildium.com/v1/files/{file_id}/downloadrequest"
 
@@ -500,6 +499,7 @@ async def process(headers, increaseinfo, accountid):
     check = False
     datelabel = ""
     logging.info("Downloading N1 File")
+    file_id = 5422945
     await download_file(headers, file_id)
     
     logging.info("Starting to process increase renewals")
