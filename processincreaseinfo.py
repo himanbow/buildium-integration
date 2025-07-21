@@ -3,6 +3,8 @@
 #2) leaserenewalingored - Commented
 #3) leaserenewals - Commented
 #4) Added Lucas's Userid to createtask
+#5) Added check in logging.info(f"Summary data count: {len(summary_data)}")
+                        ##logging.info("Calling add_summary_page")
 
 import aiohttp
 import logging
