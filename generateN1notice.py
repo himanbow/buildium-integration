@@ -141,7 +141,7 @@ async def create_summary_page(summary_data, buildingname, countbuilding, date):
     c.drawString(430, 670, "Unit")
     c.drawString(510, 670, "Delivered")
     c.setFont("Helvetica", 8)
-    c.drawString(325, 740, "Notices Delivered By:__________________________________")
+    c.drawString(325, 720, "Notices Delivered By:__________________________________")
     c.drawString(325, 690, "Date:_______________ Delivery Method:__________________")
 
     # Add data rows
@@ -149,8 +149,8 @@ async def create_summary_page(summary_data, buildingname, countbuilding, date):
     c.setFont("Helvetica", 9)
     for data in summary_data:
         tenant_names = data['increasenotice'].get('alltenantnames', 'N/A')
-        rent_charge = data['increasenotice'].get('newrent', 0)
-        formatted_rent_charge = f"${rent_charge:,.2f}"
+        total_rent = data['increasenotice'].get('newrent', 0)
+        formatted_total_charges = f"${total_rent:,.2f}"
         unit = data['increasenotice'].get('unit', 'N/A')
 
         # Extract other charges
@@ -158,8 +158,8 @@ async def create_summary_page(summary_data, buildingname, countbuilding, date):
         other_charges = sum(cg.get('Amount', 0) for cg in charges if cg.get('GlAccountId') != 3)
         formatted_other_charges = f"${other_charges:,.2f}"
 
-        total_charges = rent_charge + other_charges
-        formatted_total_charges = f"${total_charges:,.2f}"
+        rent_charge = total_rent - other_charges
+        formatted_rent_charge = f"${rent_charge:,.2f}"
         increase = data['increasenotice'].get('increase', 0)
         formatted_increase = f"${increase:,.2f}"
 
