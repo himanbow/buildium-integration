@@ -56,8 +56,16 @@ async def category(headers, session, date):
             payload = {
             'Name': f'Increases {date}'
         }
+
             async with session.request("POST", url, headers=headers, json=payload) as response:
-                category_id = await response.json()['Id']
+                if response.status not in (200, 201):
+                    err = await response.text()
+                    raise RuntimeError(f"Category create failed: {response.status} {err}")
+            
+                data = await response.json()
+                category_id = data.get("Id") or data.get("id")  # handle possible casing
+                if not category_id:
+                    raise KeyError(f"Missing Id in response: {data}")
     return category_id
 
 async def amazondatatask(payload):
