@@ -9,6 +9,8 @@ import aiofiles.os
 from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
 
+
+
 semaphore = asyncio.Semaphore(2)
 
 async def fetch_data(session, url, headers, type):
