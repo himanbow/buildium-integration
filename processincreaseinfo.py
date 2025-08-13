@@ -539,15 +539,15 @@ async def process(headers, increaseinfo, accountid):
                             if not filepath:
                                 logging.error(f"Failed N1 generation for {leaseid}")
                                 continue
-
+                        
                             # Always add to in-memory summary PDF
-                            summary_file_path = os.path.join('\\tmp', f"Notices for {buildingname} {datelabel} Part {summary_index}.pdf")
+                            summary_file_path = os.path.join('/tmp', f"Notices for {buildingname} {datelabel} Part {summary_index}.pdf")
                             ok = await addtosummary(summary_file_path, filepath, summary_writer)
                             if not ok:
                                 # Rollover to a new Part
                                 summary_writer = PdfWriter()
                                 summary_index += 1
-                                summary_file_path = os.path.join('\\tmp', f"Notices for {buildingname} {datelabel} Part {summary_index}.pdf")
+                                summary_file_path = os.path.join('/tmp', f"Notices for {buildingname} {datelabel} Part {summary_index}.pdf")
                                 ok = await addtosummary(summary_file_path, filepath, summary_writer)
 
                             # Upload individual N1 to the lease
@@ -575,7 +575,7 @@ async def process(headers, increaseinfo, accountid):
 
                     # Finalize & upload building summary (if any non-ignored leases and not ignoring building)
                     if summary_data and data.get('ignorebuilding') != "Y" and taskid:
-                        summary_file_path = os.path.join('\\tmp', f"Notices for {buildingname} {datelabel} Part {summary_index}.pdf")
+                        summary_file_path = os.path.join('/tmp', f"Notices for {buildingname} {datelabel} Part {summary_index}.pdf")
 
                         await add_summary_page(summary_data, summary_writer, summary_file_path, buildingname, countbuilding, datelabel)
 
