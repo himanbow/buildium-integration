@@ -126,7 +126,7 @@ async def process_increase_notices(task_data, headers, guideline_percentage, cli
             headers,
             account_id,
             buildingjsonfile,
-            logo_source="https://assets.rentsync.com/mantler_management/images/logos/1645623885805_mantler-01.png" optional
+            logo_source="https://assets.rentsync.com/mantler_management/images/logos/1645623885805_mantler-01.png" #optional
         )
         logging.info("Task updated with increase summary.")
     except Exception as e:
