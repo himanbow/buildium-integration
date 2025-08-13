@@ -44,6 +44,7 @@ def processcharges(recurringinfo, percentage, increasedate, agicheck, secondperc
                 'Amount': newamount,
                 'GlAccountId': item['Gl'],
                 'NextDueDate': increasedate,
+                'PostDaysInAdvance': 10,
                 'Memo': item['Memo'],
             }
             newcharge_info.append(newcharge_data)
@@ -62,6 +63,7 @@ def processcharges(recurringinfo, percentage, increasedate, agicheck, secondperc
                 'Amount': adjusted_rent,  # Use the adjusted amount
                 'GlAccountId': item['Gl'],
                 'NextDueDate': increasedate,
+                'PostDaysInAdvance': 10,
                 'Memo': item['Memo'],
             }
             newcharge_info.append(newcharge_data)
