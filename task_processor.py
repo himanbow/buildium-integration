@@ -118,7 +118,16 @@ async def process_increase_notices(task_data, headers, guideline_percentage, cli
         logging.error(f"Error building Json File {e}")
     # Update the task with the increase summary
     try:
-        await update_task_for_approval.update_task(task_data, increase_summary, increase_effective_date, guideline_percentage, headers, buildingjsonfile, account_id, numberofincreases, totalincrease)
+        await update_task_for_approval.update_task(
+            task_data,
+            increase_summary,
+            increase_effective_date,
+            guideline_percentage,
+            headers,
+            account_id,
+            buildingjsonfile,
+            logo_source="https://assets.rentsync.com/mantler_management/images/logos/1645623885805_mantler-01.png"  # optional
+        )
         logging.info("Task updated with increase summary.")
     except Exception as e:
         logging.error(f"Error updating task: {e}")
