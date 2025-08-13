@@ -144,6 +144,9 @@ async def process_generate_notices(task_data, headers, guideline_percentage, cli
     if task_data['TaskStatus'] == "Completed":
         logging.info("Processing Generation of Increase Notices")
         increaseinfo = await decodefile.decode(headers, task_data, client_secret)
+        if not increaseinfo:
+            logging.error("decode() returned no data; aborting this task.")
+            return
         await processincreaseinfo.process(headers, increaseinfo, account_id)
 
     else:
