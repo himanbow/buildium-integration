@@ -128,7 +128,7 @@ async def update_task(
         run_date = datetime.now(UTC).strftime("%Y-%m-%d")
         eff_str = increase_effective_date.strftime("%B %d, %Y")
         pdf_filename  = f"Increase Review Report {increase_effective_date.strftime('%B %d, %Y')}.pdf"
-        json_filename = f"data.json"
+        json_filename = "data.json"
 
         # Generate PDF
         from tempfile import NamedTemporaryFile
