@@ -80,30 +80,79 @@ def formatdollaramount(amount):
     return dollar_amount
 
 
+def _sanitize_filename(name: str, max_len: int = 80) -> str:
+    # remove characters invalid in filenames and collapse whitespace
+    name = re.sub(r'[\\/:"*?<>|]+', ' ', name)
+    name = re.sub(r'\s+', ' ', name).strip()
+    return (name[:max_len]).strip()
+
+def _resolve_template_path() -> Path:
+    """
+    Locate N1.pdf template:
+      1) env var N1_TEMPLATE_PATH (absolute or relative)
+      2) ./templates/N1.pdf next to this module
+      3) ./N1.pdf next to this module
+      4) /workspace/templates/N1.pdf (Cloud Run default workdir)
+    """
+    # 1) explicit
+    env_path = os.getenv("N1_TEMPLATE_PATH")
+    if env_path:
+        p = Path(env_path)
+        if not p.is_absolute():
+            p = Path(__file__).resolve().parent / p
+        if p.is_file():
+            return p
+
+    module_dir = Path(__file__).resolve().parent
+
+    # 2) templates folder
+    cand = module_dir / "templates" / "N1.pdf"
+    if cand.is_file():
+        return cand
+
+    # 3) same folder
+    cand = module_dir / "N1.pdf"
+    if cand.is_file():
+        return cand
+
+    # 4) common Cloud Run location (if you COPY it there in Docker)
+    cand = Path("/workspace/templates/N1.pdf")
+    if cand.is_file():
+        return cand
+
+    return None
+
 async def create(leaseid, data):
+    address = (data.get('address') or '').split(',', 1)[0]  # "1 - 1 Smith Road"
+    address_safe = _sanitize_filename(address)
 
-    address = data['address']
+    dt = datetime.datetime.strptime(data['increasedate'], "%Y-%m-%d")
+    datename = dt.strftime("%B %d, %Y")
 
-    address = address.split(',', 1)[0]
+    # find template in image/package, NOT /tmp
+    template_path = _resolve_template_path()
+    if not template_path:
+        msg = "N1.pdf template not found. Set N1_TEMPLATE_PATH or include templates/N1.pdf in the image."
+        logging.error(msg)
+        raise FileNotFoundError(msg)
 
-    datename = datetime.datetime.strptime(data['increasedate'], "%Y-%m-%d")
-    datename = datename.strftime("%B %d, %Y")
-    # Input paths and temporary paths
-    input_pdf_path = '/tmp/N1.pdf'
-    overlay_pdf_path = f'/tmp/N1 for Apartment {address} Effective {datename}_overlay.pdf'
-    output_pdf_path = f'/tmp/N1 for Apartment {address} Effective {datename}.pdf'
+    # output paths (scratch)
+    overlay_pdf_path = f"/tmp/N1 for Apartment {address_safe} Effective {datename}_overlay.pdf"
+    output_pdf_path  = f"/tmp/N1 for Apartment {address_safe} Effective {datename}.pdf"
 
-    # Create the overlay with text at specified coordinates
+    # 1) create overlay as before
     create_text_overlay(data, overlay_pdf_path)
 
-    # Merge the overlay onto the original PDF
-    merge_pdfs(input_pdf_path, overlay_pdf_path, output_pdf_path)
+    # 2) merge overlay onto template
+    merge_pdfs(str(template_path), overlay_pdf_path, output_pdf_path)
 
-    # Remove the temporary overlay file after merging
-    os.remove(overlay_pdf_path)
+    # 3) cleanup overlay
+    try:
+        os.remove(overlay_pdf_path)
+    except Exception:
+        pass
 
     return output_pdf_path
-
 
 async def create_summary_page(summary_data, buildingname, countbuilding, date):
     """Create a summary page and return the BytesIO object containing the summary."""
