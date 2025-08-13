@@ -149,6 +149,24 @@ def _build_formdata_from_form(form, preferred_order):
 
     return fd
 
+def _basename_for_upload(path: str) -> str:
+    """
+    Return just the filename from any path (Windows or POSIX).
+    """
+    if not path:
+        return ""
+    # normalize backslashes to slashes first
+    norm = path.replace("\\", "/")
+    return os.path.basename(norm)
+
+def _ensure_exists(path: str) -> bool:
+    try:
+        return os.path.isfile(path)
+    except Exception:
+        return False
+
+# ---------- existing form builders (you already have these) ----------
+
 async def amazondatatask(payload):
     """Build FormData for task-history file uploads (without adding the 'file' field)."""
     form = payload.get("FormData", {})
@@ -163,100 +181,110 @@ async def amazondatalease(payload):
     bucket_url = payload["BucketUrl"]
     return form_data, bucket_url
 
-# -------------------- PDF generation per lease --------------------
+# -------------------- PDF generation per lease (unchanged) --------------------
 async def generateN1files(leaseid, leasedata):
     logging.info(f"Generating Increase Notices for lease {leaseid}")
     filepath = await generateN1notice.create(leaseid, leasedata)
     return filepath
 
-# -------------------- upload to Lease --------------------
+# -------------------- upload to Lease (fixed) --------------------
 async def uploadN1filestolease(headers, filepath, leaseid, session, categoryid):
     logging.info(f"Uploading N1 File to Lease {leaseid}")
 
     try:
-        # Extract filename after '\tmp\' (Windows path convention in your codebase)
-        base_path, filename = filepath.split("\\tmp\\", 1)
+        if not _ensure_exists(filepath):
+            logging.error(f"Lease upload aborted: file not found at {filepath}")
+            return False
+
+        filename = _basename_for_upload(filepath)
 
         # 1) Get presign
         url = "https://api.buildium.com/v1/files/uploadrequests"
         body = {
             "EntityType": "Lease",
             "EntityId": leaseid,
-            "FileName": filename,
+            "FileName": filename,   # must be just the name
             "Title": filename,
             "CategoryId": categoryid
         }
         async with session.post(url, json=body, headers=headers) as response:
             if response.status != 201:
-                logging.info(f"Error while submitting file metadata: {await response.text()}")
+                logging.info(f"Error while submitting lease file metadata: {response.status} {await response.text()}")
                 return False
 
             payload = await response.json()
             form_data, bucket_url = await amazondatalease(payload)
 
-            # 2) Read file and add as LAST field
-            async with aiofiles.open(filepath, 'rb') as f:
-                file_content = await f.read()
-            form_data.add_field("file", file_content, filename=filename, content_type='application/pdf')
+        # 2) Read file and add as LAST field
+        async with aiofiles.open(filepath, 'rb') as f:
+            file_content = await f.read()
+        form_data.add_field("file", file_content, filename=filename, content_type='application/pdf')
 
-            # 3) Upload to S3
-            async with session.post(bucket_url, data=form_data) as upload_response:
-                if upload_response.status == 204:
-                    logging.info(f"Upload of Notice for {leaseid} successful.")
-                    return True
-                else:
-                    logging.info(f"Error Uploading Notice for {leaseid}: {upload_response.status} {await upload_response.text()}")
-                    return False
+        # 3) Upload to S3
+        async with session.post(bucket_url, data=form_data) as upload_response:
+            if upload_response.status == 204:
+                logging.info(f"Upload of Notice for {leaseid} successful.")
+                return True
+            else:
+                logging.info(f"Error Uploading Notice for {leaseid}: {upload_response.status} {await upload_response.text()}")
+                return False
 
     except Exception as e:
         logging.info(f"An error occurred uploading N1 for lease {leaseid}: {str(e)}")
         return False
 
-# -------------------- upload summary to Task --------------------
+# -------------------- upload summary to Task (fixed) --------------------
 async def uploadsummarytotask(headers, filepath, taskid, session, categoryid):
     logging.info(f"Uploading Summary to Task {taskid}")
 
     try:
-        base_path, filename = filepath.split("\\tmp\\", 1)
+        if not _ensure_exists(filepath):
+            logging.error(f"Task upload aborted: file not found at {filepath}")
+            return False
 
-        # 1) Get latest task history id
+        filename = _basename_for_upload(filepath)
+
+        # 1) Get latest task history id (newest first)
         urltaskhistory = f"https://api.buildium.com/v1/tasks/{taskid}/history"
         async with session.get(urltaskhistory, headers=headers) as response:
             if response.status != 200:
-                logging.info(f"Error while getting task history: {await response.text()}")
+                logging.info(f"Error while getting task history: {response.status} {await response.text()}")
                 return False
 
             taskhistorydata = await response.json()
-            # Sort newest first, just in case
             try:
                 taskhistorydata.sort(key=lambda h: h.get("Date") or h.get("CreatedDate") or "", reverse=True)
             except Exception:
                 pass
+            if not taskhistorydata:
+                logging.info("No task history entries found to attach file to.")
+                return False
             taskhistoryid = taskhistorydata[0]['Id']
 
         # 2) Presign for this history entry
         url = f"https://api.buildium.com/v1/tasks/{taskid}/history/{taskhistoryid}/files/uploadrequests"
-        async with session.post(url, json={'FileName': filename}, headers=headers) as response:
+        body = {"FileName": filename}
+        async with session.post(url, json=body, headers=headers) as response:
             if response.status != 201:
-                logging.info(f"Error while submitting file metadata: {await response.text()}")
+                logging.info(f"Error while submitting task file metadata: {response.status} {await response.text()}")
                 return False
 
             payload = await response.json()
             form_data, bucket_url = await amazondatatask(payload)
 
-            # 3) Read PDF + add LAST
-            async with aiofiles.open(filepath, 'rb') as f:
-                file_content = await f.read()
-            form_data.add_field("file", file_content, filename=filename, content_type='application/pdf')
+        # 3) Read PDF + add LAST
+        async with aiofiles.open(filepath, 'rb') as f:
+            file_content = await f.read()
+        form_data.add_field("file", file_content, filename=filename, content_type='application/pdf')
 
-            # 4) Upload to S3
-            async with session.post(bucket_url, data=form_data) as upload_response:
-                if upload_response.status == 204:
-                    logging.info(f"Upload successful for Task {taskid}.")
-                    return True
-                else:
-                    logging.info(f"Error Uploading File for Task {taskid}: {upload_response.status} {await upload_response.text()}")
-                    return False
+        # 4) Upload to S3
+        async with session.post(bucket_url, data=form_data) as upload_response:
+            if upload_response.status == 204:
+                logging.info(f"Upload successful for Task {taskid}.")
+                return True
+            else:
+                logging.info(f"Error Uploading File for Task {taskid}: {upload_response.status} {await upload_response.text()}")
+                return False
 
     except Exception as e:
         logging.error(f"Error Uploading Summary to task: {e}")
