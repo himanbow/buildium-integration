@@ -1,35 +1,28 @@
-from datetime import date, timedelta, datetime, UTC
+from datetime import date as _date, timedelta, datetime, UTC
 import logging
 import aiohttp
 from collections import defaultdict
 
-
+# ---------------- dates ----------------
 async def getdates():
-    # Get today's date
     logging.info("Setting LMR Interest Dates")
-    today = date.today()
+    today = _date.today()
 
-    # First day of the current month
     first_day = today.replace(day=1)
-
-    # Find the last day of the month
-    if today.month == 12:  # December case → next year
-        next_month = today.replace(year=today.year + 1, month=1, day=1)
+    # first day of next month
+    if today.month == 12:
+        next_month_1 = _date(today.year + 1, 1, 1)
     else:
-        next_month = today.replace(month=today.month + 1, day=1)
+        next_month_1 = _date(today.year, today.month + 1, 1)
+    last_day = next_month_1 - timedelta(days=1)
 
-    last_day = next_month - timedelta(days=1)
-
-    # Month and year in full (e.g., "August 2025")
     month_year = today.strftime("%B %Y")
+    days_in_year = (_date(today.year + 1, 1, 1) - _date(today.year, 1, 1)).days
+    return first_day, last_day, month_year, days_in_year
 
-    days_in_year = (date(today.year + 1, 1, 1) - date(today.year, 1, 1)).days
-
-    return(first_day, last_day, month_year, days_in_year)
-
-        
-async def get_leases(session, headers):
-    """Fetch leases asynchronously with pagination using offset."""
+# ---------------- leases ----------------
+async def get_leases(session: aiohttp.ClientSession, headers: dict):
+    """Fetch active Fixed / FixedWithRollover leases with offset pagination."""
     url = "https://api.buildium.com/v1/leases"
     all_leases = []
     offset = 0
@@ -37,153 +30,132 @@ async def get_leases(session, headers):
 
     while True:
         params = {
-            'leasestatuses': "Active",
-            'leasetypes' : "Fixed, FixedWithRollover",
-            'limit': limit,
-            'offset': offset,
+            "leasestatuses": "Active",
+            "leasetypes": "Fixed,FixedWithRollover",
+            "limit": limit,
+            "offset": offset,
         }
-        
-        async with session.get(url, headers=headers, params=params) as response:
-            leases = await response.json()
-            if not leases:
+        async with session.get(url, headers=headers, params=params) as resp:
+            if resp.status != 200:
+                txt = await resp.text()
+                logging.error(f"get_leases failed: {resp.status} {txt}")
                 break
-
-            all_leases.extend(leases)
-            offset += limit
-
-        
+            batch = await resp.json()
+        if not batch:
+            break
+        all_leases.extend(batch)
+        offset += limit
 
     logging.info(f"Fetched {len(all_leases)} leases")
     return all_leases
 
-async def lmrbalance(headers, leases, session):
-
-    idsandlmrs = []
+# ---------------- LMR balance per lease ----------------
+async def lmrbalance(headers: dict, leases: list, session: aiohttp.ClientSession):
+    """
+    For each lease, sum LMR-related transactions to compute current LMR balance.
+    """
     LMRGLID = 191645
-    leaseurl = "https://api.buildium.com/v1/leases/"
-    transactionsportion = "/transactions"
-    all_lmrs = []
-    offset = 0
-    limit = 1000
+    results = []
 
-    params = {
-        'limit' : limit
-    }
+    for lease in leases:
+        leaseid = lease["Id"]
+        propertyid = lease["PropertyId"]
 
-    for item in leases:
-        leaseid = item['Id']
-        propertyid = item['PropertyId']
-        
+        # fetch transactions with pagination (if supported)
+        url = f"https://api.buildium.com/v1/leases/{leaseid}/transactions"
+        offset = 0
+        limit = 1000
+        all_tx = []
 
-        leaseidlink = str(leaseid)
-        lmrbalanceurl = leaseurl + leaseidlink + transactionsportion
         while True:
-            async with session.get(lmrbalanceurl, headers=headers, params=params) as response:
-                data = await response.json()
-            if not data:
+            params = {"limit": limit, "offset": offset}
+            async with session.get(url, headers=headers, params=params) as resp:
+                if resp.status != 200:
+                    logging.error(f"Tx fetch {leaseid} failed: {resp.status} {await resp.text()}")
+                    break
+                batch = await resp.json()
+            if not batch:
                 break
-
-            all_lmrs.extend(data)
+            all_tx.extend(batch)
             offset += limit
-            
 
-        currentLMRBalance = 0
         payment_amount = 0.0
         credit_amount = 0.0
         applied_deposit_amount = 0.0
-        amount = 0
-        for item in all_lmrs:
-            print(item['TransactionType'])
-            transaction_type = item['TransactionType']
-            for line in item['Journal']['Lines']:
-                gl_account_id = line['GLAccount']['Id']
-                amount = line['Amount']
-                
-                # Check if the GLAccount ID matches the target GLAccount ID
-                if gl_account_id == LMRGLID:
-                    if transaction_type == 'Payment':
+
+        for tx in all_tx:
+            ttype = tx.get("TransactionType")
+            journal = tx.get("Journal") or {}
+            memo = (journal.get("Memo") or "").strip()
+            for line in (journal.get("Lines") or []):
+                gl_id = ((line.get("GLAccount") or {}).get("Id"))
+                amount = float(line.get("Amount") or 0.0)
+
+                if gl_id == LMRGLID:
+                    if ttype == "Payment":
                         payment_amount -= amount
-                    elif transaction_type == 'Credit':
+                    elif ttype == "Credit":
                         credit_amount -= amount
-                elif transaction_type == 'Applied Deposit':
-                    if item['Journal']['Memo'] != "Last Month's Rent Interest Applied to Balances":
-                        applied_deposit_amount += amount  # Subtract for 'Applied Deposit'
+                elif ttype == "Applied Deposit":
+                    # exclude the periodic interest application line itself
+                    if memo != "Last Month's Rent Interest Applied to Balances":
+                        applied_deposit_amount += amount
 
-        currentLMRBalance = payment_amount + credit_amount + applied_deposit_amount
-        currentLMRBalance = round(currentLMRBalance,2)
-        
+        current_lmr = round(payment_amount + credit_amount + applied_deposit_amount, 2)
+        results.append({"leaseid": leaseid, "lmrbalance": current_lmr, "propertyid": propertyid})
 
-        label1 = "leaseid"
-        label2 = "lmrbalance"
-        label3 = "propertyid"
-        
-        entry = {label1: leaseid, label2: currentLMRBalance, label3: propertyid}
-        idsandlmrs.append(entry)
+    return results
 
-    return idsandlmrs
+# ---------------- interest calc ----------------
+async def calculate(lmr_rows: list, percentage: float, date_1: _date, date_2: _date, days_in_year: int):
+    """
+    lmr_rows: list of {leaseid, lmrbalance, propertyid}
+    returns: list of {leaseid, interest, propertyid}
+    """
+    interestrate = float(percentage) / 100.0
+    daily_interest = interestrate / float(days_in_year)
 
-async def calculate(lmrbalance, percentage, date_1, date_2, days_in_year):
-    label1 = "leaseid"
-    label2 = "interest"
-    label3 = "propertyid"
-    idsandinterest = []
+    numberofdays = (date_2 - date_1).days + 1
+    out = []
 
-    ### Calculate daily interest
-    interestrate = float(percentage) / 100
-    daily_interest = interestrate / days_in_year
+    for row in lmr_rows:
+        lmr = float(row.get("lmrbalance") or 0.0)
+        if lmr <= 0:
+            continue
+        interest_total = round(lmr * daily_interest * numberofdays, 2)
+        if interest_total > 0:
+            out.append({
+                "leaseid": row["leaseid"],
+                "interest": interest_total,           # <-- use key 'interest'
+                "propertyid": row["propertyid"],
+            })
+    return out
 
-    ### Calculate number of days
-    date_1 = datetime.datetime.strptime(date_1, "%Y-%m-%d")
-    date_2 = datetime.datetime.strptime(date_2, "%Y-%m-%d")
-    difference = date_2 - date_1
-    numberofdays = difference.days + 1
+# ---------------- aggregate per building ----------------
+async def reportbuildingtotals(session: aiohttp.ClientSession, interest_and_ids: list, headers: dict):
+    """
+    Return dict { property_name: total_interest }.
+    """
+    totals_by_property_id = defaultdict(float)
+    for row in interest_and_ids:
+        totals_by_property_id[row["propertyid"]] += float(row["interest"])
 
+    # resolve names
+    result = {}
+    for prop_id, total in totals_by_property_id.items():
+        url = f"https://api.buildium.com/v1/rentals/{prop_id}"
+        async with session.get(url, headers=headers) as resp:
+            if resp.status != 200:
+                logging.error(f"rental GET {prop_id} failed: {resp.status} {await resp.text()}")
+                name = f"Property {prop_id}"
+            else:
+                data = await resp.json()
+                name = data.get("Name") or f"Property {prop_id}"
+        result[name] = round(total, 2)
 
-    for entry in lmrbalance:
-        leaseid = 0
-        lmr = 0
-        leaseid = entry.get("leaseid")
-        lmr = entry.get("lmrbalance")
-        propertyid = entry.get("propertyid")
+    return result
 
-        interestoweddaily = lmr * daily_interest
-        interestowedtotal = round(interestoweddaily * numberofdays,2)
-
-        if interestowedtotal > 0:
-            listentry = {label1: leaseid, label2: interestowedtotal, label3: propertyid}
-
-            idsandinterest.append(listentry)
-        
-
-
-    return idsandinterest
-
-
-async def reportbuildingtotals(session, interest_and_ids, headers):
-    # Dictionary to accumulate totals
-    totals_by_property = defaultdict(float)
-    totals_by_property_report = defaultdict(float)
-    url = "https://api.buildium.com/v1/rentals/"
-
-    # Loop through entries and sum by propertyid
-    for entry in interest_and_ids:
-        prop_id = entry["propertyid"]
-        interest = entry["interestowedtotal"]
-        totals_by_property[prop_id] += interest
-
-    for entry in totals_by_property:
-        prop_id = entry["propertyid"]
-        url_full = url + prop_id
-        async with session.get(url_full, headers=headers) as response:
-            data = await response.json()
-            prop_name = data['Name']
-
-        interest = entry["interestowedtotal"]
-        totals_by_property[prop_name] += interest
-
-    
-    return totals_by_property_report
-
+# ---------------- task message ----------------
 async def _put_task_message(session, task_id: int, headers: dict,
                             title: str, assigned_to_user_id: int, taskcatid: int, msg: str) -> bool:
     url_task = f"https://api.buildium.com/v1/tasks/todorequests/{task_id}"
@@ -203,41 +175,44 @@ async def _put_task_message(session, task_id: int, headers: dict,
         logging.error(f"Task PUT failed: {r.status} {await r.text()}")
         return False
 
-async def updatetask(task_data, headers, session, lmr_report_data, month_label):
+async def updatetask(task_data, headers, session, lmr_report_data: dict, month_label: str):
     try:
         task_id = task_data["Id"]
         taskcatid = task_data["Category"]["Id"]
         assigned_to_user_id = task_data["AssignedToUserId"]
         title = f"Last Month's Interest for {month_label} - Review"
-       
-        # Add formating for the task message
-        # msg = ""
-        # for item in lmr_report_data:
-        message = str(lmr_report_data)
+
+        # simple readable message
+        if not lmr_report_data:
+            message = "No LMR interest due this month."
+        else:
+            lines = [f"{name}: ${total:,.2f}" for name, total in sorted(lmr_report_data.items())]
+            message = "LMR Interest Totals by Property:\n" + "\n".join(lines)
 
         status = await _put_task_message(session, task_id, headers, title, assigned_to_user_id, taskcatid, message)
         return status
-
-
     except Exception as e:
         logging.exception(f"Error updating task: {e} for LMR Interest")
         return False
 
-
-
-async def lmrinterestprogram(task_data, headers, guideline_percentage):
-    ## Set first and last dates for interest calculation
+# ---------------- orchestrator ----------------
+async def lmrinterestprogram(task_data, headers, guideline_percentage: float):
     async with aiohttp.ClientSession() as session:
         first_day, last_day, month_label, days_in_year = await getdates()
 
-        leases = await get_leases(headers, session)
-        lmr_and_ids = await lmrbalance(headers, leases, session)
-        interest_and_ids = await calculate(lmr_and_ids, guideline_percentage, first_day, last_day, days_in_year)
-        lmr_report_data = await reportbuildingtotals(session, interest_and_ids, headers)
-        taskupdated = await updatetask(task_data, headers, session, lmr_report_data, month_label)
-        if taskupdated is True:
-            logging.info(f"LMR Interest Task {task_data} updated.")
+        # FIX: correct arg order
+        leases = await get_leases(session, headers)
 
+        lmr_and_ids = await lmrbalance(headers, leases, session)
+
+        # FIX: pass date objects directly
+        interest_and_ids = await calculate(lmr_and_ids, guideline_percentage, first_day, last_day, days_in_year)
+
+        lmr_report_data = await reportbuildingtotals(session, interest_and_ids, headers)
+
+        taskupdated = await updatetask(task_data, headers, session, lmr_report_data, month_label)
+        if taskupdated:
+            logging.info(f"LMR Interest Task {task_data['Id']} updated.")
 
 
 
