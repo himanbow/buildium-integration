@@ -159,7 +159,7 @@ async def update_task(
 
         async with aiohttp.ClientSession() as session:
             # 1) Create a new history entry with the message
-            msg = f'Please review "{pdf_filename}" for the increase notices. A data snapshot "{json_filename}" is also attached.'
+            msg = f'Please review "{pdf_filename}" for the increase notices. Should you required any changes, complete the changes, delete this task, and create a new task entilted "Increase Notices" with the task category set to "System Tasks'
             ok_put = await _put_task_message(session, task_id, headers, title, assigned_to_user_id, taskcatid, msg)
             if not ok_put:
                 return False
@@ -189,5 +189,5 @@ async def update_task(
             return True
 
     except Exception as e:
-        logging.exception(f"Error updating task: {e}")
+        logging.exception(f"Error updating task: {e} for increase notices")
         return False

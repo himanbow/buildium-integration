@@ -8,6 +8,7 @@ import logging
 import build_increase_json
 import decodefile
 import processincreaseinfo
+import runlmrinterest
 
 
 
@@ -82,7 +83,8 @@ async def process_task(task_id, task_type, account_id, event_name, account_info)
         elif "Increase Letters" in task_title:
             await process_increase_letters(task_data, headers)
         elif "LMR Interest" in task_title:
-            await process_lmr_interest(task_data, headers)
+            await runlmrinterest.lmrinterestprogram(task_data, headers, guideline_percentage)
+            logging.info(f"Running LMR Interest Program for {account_id}")
         else:
             logging.error(f"Unknown task type for TaskId: {task_id}")
     elif event_name == 'Task.History.Created':
@@ -94,7 +96,7 @@ async def process_increase_notices(task_data, headers, guideline_percentage, cli
     """Handle Increase Notices task."""
     logging.info("Processing Increase Notices")
 
-    # Call gather_leases_for_increase asynchronously
+    # Call gather_leayg_for_increase asynchronously
     try:
         leases_by_building, increase_effective_date = await get_eligible_leases.gather_leases_for_increase(headers, guideline_percentage)
         logging.info(f"Fetched leases for increase.")

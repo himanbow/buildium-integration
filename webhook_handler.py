@@ -139,17 +139,3 @@ async def index():
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=8080)
-
-
-# task_id = 462494
-# task_type = 2
-# event_name = 'Task.Updated'
-# account_id = 321324
-# account_info = {
-#             'client_id': 'mantler-client-id',
-#             'secret_name': 'mantler-webhook-secret',
-#             'api_secret_name': 'mantler-api-secret',
-#             'guideline_increase': '2.5',
-#             'api_client_id': '2483ddb2-8195-44db-b450-9cd0070464b3'
-#             }
-# asyncio.create_task(process_task_in_background(task_id, task_type, account_id, event_name, account_info))
