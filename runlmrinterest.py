@@ -60,6 +60,7 @@ async def lmrbalance(headers: dict, leases: list, session: aiohttp.ClientSession
     for lease in leases:
         leaseid = lease["Id"]
         propertyid = lease["PropertyId"]
+        logging.info(f"Grabbing all transactions for {leaseid}")
 
         # fetch transactions with pagination (if supported)
         url = f"https://api.buildium.com/v1/leases/{leaseid}/transactions"
@@ -103,6 +104,7 @@ async def lmrbalance(headers: dict, leases: list, session: aiohttp.ClientSession
 
         current_lmr = round(payment_amount + credit_amount + applied_deposit_amount, 2)
         results.append({"leaseid": leaseid, "lmrbalance": current_lmr, "propertyid": propertyid})
+    logging.info("Retrieved LMR Balances")
 
     return results
 
@@ -129,6 +131,7 @@ async def calculate(lmr_rows: list, percentage: float, date_1: _date, date_2: _d
                 "interest": interest_total,           # <-- use key 'interest'
                 "propertyid": row["propertyid"],
             })
+    logging.info("Calculated LMR Interest for all leases")
     return out
 
 # ---------------- aggregate per building ----------------
@@ -136,6 +139,7 @@ async def reportbuildingtotals(session: aiohttp.ClientSession, interest_and_ids:
     """
     Return dict { property_name: total_interest }.
     """
+    logging.info("Running Building LMR Interest Breakdown")
     totals_by_property_id = defaultdict(float)
     for row in interest_and_ids:
         totals_by_property_id[row["propertyid"]] += float(row["interest"])
@@ -152,12 +156,13 @@ async def reportbuildingtotals(session: aiohttp.ClientSession, interest_and_ids:
                 data = await resp.json()
                 name = data.get("Name") or f"Property {prop_id}"
         result[name] = round(total, 2)
-
+    logging.info("Completed Building LMR Interest Breakdown")
     return result
 
 # ---------------- task message ----------------
 async def _put_task_message(session, task_id: int, headers: dict,
                             title: str, assigned_to_user_id: int, taskcatid: int, msg: str) -> bool:
+    logging.info("Updating Task")
     url_task = f"https://api.buildium.com/v1/tasks/todorequests/{task_id}"
     payload = {
         "Title": title,
