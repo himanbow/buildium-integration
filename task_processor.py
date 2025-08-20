@@ -83,7 +83,8 @@ async def process_task(task_id, task_type, account_id, event_name, account_info)
         elif "Increase Letters" in task_title:
             await process_increase_letters(task_data, headers)
         elif "LMR Interest" in task_title:
-            await runlmrinterest.lmrinterestprogram(task_data, headers, guideline_percentage)
+            #Program no ready
+            # await runlmrinterest.lmrinterestprogram(task_data, headers, guideline_percentage)
             logging.info(f"Running LMR Interest Program for {account_id}")
         else:
             logging.error(f"Unknown task type for TaskId: {task_id}")
