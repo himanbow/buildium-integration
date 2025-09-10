@@ -3,6 +3,7 @@ from collections import defaultdict
 from io import BytesIO
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
+import logging
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import LETTER, landscape
@@ -74,23 +75,28 @@ def _short_name(name: str | None, limit: int = 20) -> str:
     return s if len(s) <= limit else s[:limit] + "."
 
 def _fetch_logo_bytes(logo_source: str | None) -> bytes | None:
-    if not logo_source:
-        return None
-    try:
-        if logo_source.lower().startswith(("http://", "https://")):
-            req = Request(logo_source, headers={"User-Agent": "Mozilla/5.0"})
-            with urlopen(req, timeout=10) as resp:
-                return resp.read()
-        else:
-            with open(logo_source, "rb") as f:
-                return f.read()
-    except (HTTPError, URLError, OSError, ValueError):
-        return None
+    ## Removing Logo for troubleshooting
+    
+    return None
+    
+    # if not logo_source:
+    #     return None
+    # try:
+    #     if logo_source.lower().startswith(("http://", "https://")):
+    #         req = Request(logo_source, headers={"User-Agent": "Mozilla/5.0"})
+    #         with urlopen(req, timeout=10) as resp:
+    #             return resp.read()
+    #     else:
+    #         with open(logo_source, "rb") as f:
+    #             return f.read()
+    # except (HTTPError, URLError, OSError, ValueError):
+    #     return None
 
 def _prepare_logo(logo_source: str | None,
                   box_w_in: float = 1.6,
                   box_h_in: float = 1.0,
                   target_dpi: int = 150) -> tuple[bytes | None, float, float]:
+    logging.info("Preparing Logo")
     """
     Return (processed_image_bytes, draw_w_pt, draw_h_pt) where draw sizes
     fit within the given inch box and preserve aspect ratio.
@@ -140,6 +146,7 @@ def _prepare_logo(logo_source: str | None,
 
 # ---------- tables ----------
 def _make_main_table(rows, styles):
+    logging.info("Preparing Main Table")
     cell_style = ParagraphStyle("cell", parent=styles["BodyText"], fontSize=8, leading=9)
     header_style = ParagraphStyle("header", parent=styles["BodyText"], fontSize=8, leading=9)
 
@@ -176,9 +183,11 @@ def _make_main_table(rows, styles):
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.HexColor("#EAF2FB"), colors.whitesmoke]),
     ]))
+    logging.info("Completed Main Table")
     return tbl
 
 def _make_ignored_table(rows, styles):
+    logging.info("Preparing Ignored Table")
     cell_style = ParagraphStyle("cell", parent=styles["BodyText"], fontSize=8, leading=9)
     header_style = ParagraphStyle("header", parent=styles["BodyText"], fontSize=8, leading=9)
 
@@ -250,6 +259,7 @@ def build_increase_report_pdf(
     totals_by_building: dict | None = None,
     logo_source: str | None = None,
 ):
+    logging.info("Preparing Increase Summary Report")
     """
     Multi-building PDF (one page per building) with:
       - Header + logo (top-right) on first page of each building
@@ -271,6 +281,7 @@ def build_increase_report_pdf(
     by_building = defaultdict(list)
     for r in rows:
         by_building[r.get("buildingname", "Unknown Building")].append(r)
+    logging.info("Group Rows by Building")
 
     # Compute totals if not provided
     if totals_by_building is None:
@@ -286,6 +297,7 @@ def build_increase_report_pdf(
                 "ignored_count": len(ignored),
                 "ignored_total_inc": _fmt_money(total_ignored),
             }
+        logging.info("Computed Totals")
 
     # Build pages
     for idx, (building, rs) in enumerate(by_building.items()):
@@ -333,3 +345,4 @@ def build_increase_report_pdf(
 
     # Build with page numbering canvas
     doc.build(story, canvasmaker=NumberedCanvas)
+    logging.info("Completed Summary Report")
