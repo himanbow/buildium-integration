@@ -22,6 +22,7 @@ def _flatten_rows_from_summary(increase_summary: dict) -> list[dict]:
 
 async def _put_task_message(session: aiohttp.ClientSession, task_id: int, headers: dict,
                             title: str, assigned_to_user_id: int, taskcatid: int, msg: str) -> bool:
+    logging.info("Updating Task")
     url_task = f"https://api.buildium.com/v1/tasks/todorequests/{task_id}"
     payload = {
         "Title": title,
@@ -35,7 +36,9 @@ async def _put_task_message(session: aiohttp.ClientSession, task_id: int, header
     }
     async with session.put(url_task, json=payload, headers=headers) as r:
         if r.status == 200:
+            logging.info("Task Updated")
             return True
+            
         logging.error(f"Task PUT failed: {r.status} {await r.text()}")
         return False
 
@@ -58,6 +61,7 @@ async def _get_latest_history_id(session: aiohttp.ClientSession, task_id: int, h
 async def _upload_file_for_history(session: aiohttp.ClientSession, task_id: int, history_id: int,
                                    headers: dict, filename: str, file_bytes: bytes,
                                    content_type: str) -> bool:
+    logging.info("Starting File Upload")
     """
     1) POST /tasks/{taskId}/history/{historyId}/files/uploadrequests
     2) POST to BucketUrl with multipart:
@@ -77,7 +81,7 @@ async def _upload_file_for_history(session: aiohttp.ClientSession, task_id: int,
     if not bucket_url or not form:
         logging.error("Upload request missing BucketUrl or FormData.")
         return False
-
+    logging.info("File Presign Completed")
     # Maintain expected field order; ensure file last
     ordered_keys = [
         "Key", "ACL", "Policy", "Content-Type", "Content-Disposition",
@@ -189,6 +193,7 @@ async def update_task(
        # Generate PDF
         with NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_pdf:
             pdf_path = tmp_pdf.name
+            logging.info(f"File Name: {pdf_path}.")
 
         try:
             build_increase_report_pdf(
