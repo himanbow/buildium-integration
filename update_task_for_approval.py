@@ -10,25 +10,27 @@ from pathlib import Path
 
 from build_prelim_increase_report import build_increase_report_pdf
 
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # Logging (won't override if you've already configured handlers elsewhere)
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 if not logging.getLogger().handlers:
     logging.basicConfig(level=logging.INFO)
 
-# ---------------------------------------------------------------------------
-# API base + resource family
-# If your tenant expects plain 'tasks' endpoints for history/files, set:
-#   TASK_RESOURCE = "tasks"
-# Otherwise, keep "tasks/todorequests"
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# API bases
+#   - To-Do Requests live under /v1/tasks/todorequests
+#   - Task history & file uploads live under /v1/tasks
+#     (per Buildium OpenAPI; upload presign is:
+#      POST /v1/tasks/{taskId}/history/{taskHistoryId}/files/uploadrequests)
+# -----------------------------------------------------------------------------
 BASE_API = "https://api.buildium.com/v1"
-TASK_RESOURCE = "tasks/todorequests"  # <-- change to "tasks" if needed
+TODO_RESOURCE = "tasks/todorequests"
+TASKS_RESOURCE = "tasks"
 
 
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 def _flatten_rows_from_summary(increase_summary: dict) -> list[dict]:
     rows = []
     for b_id, data in (increase_summary or {}).items():
@@ -51,7 +53,7 @@ def _parse_iso(dt_str: Optional[str]) -> datetime:
 async def _put_task_message(session: aiohttp.ClientSession, task_id: int, headers: dict,
                             title: str, assigned_to_user_id: int, taskcatid: int, msg: str) -> bool:
     logging.info("Updating task message/title/assignee...")
-    url_task = f"{BASE_API}/{TASK_RESOURCE}/{task_id}"
+    url_task = f"{BASE_API}/{TODO_RESOURCE}/{task_id}"
     payload = {
         "Title": title,
         "AssignedToUserId": assigned_to_user_id,
@@ -65,14 +67,15 @@ async def _put_task_message(session: aiohttp.ClientSession, task_id: int, header
     async with session.put(url_task, json=payload, headers=headers) as r:
         body = await r.text()
         if r.status == 200:
-            logging.info("Task updated.")
+            logging.info("Task updated (PUT todorequests).")
             return True
         logging.error(f"Task PUT failed: {r.status} {body[:500]}")
         return False
 
 
 async def _get_latest_history_id(session: aiohttp.ClientSession, task_id: int, headers: dict) -> Optional[int]:
-    url_hist = f"{BASE_API}/{TASK_RESOURCE}/{task_id}/history"
+    # History is under /v1/tasks
+    url_hist = f"{BASE_API}/{TASKS_RESOURCE}/{task_id}/history"
     async with session.get(url_hist, headers=headers) as r_hist:
         body = await r_hist.text()
         if r_hist.status != 200:
@@ -102,14 +105,14 @@ async def _upload_file_for_history(session: aiohttp.ClientSession, task_id: int,
                                    headers: dict, filename: str, file_bytes: bytes,
                                    content_type: str) -> bool:
     """
-    1) Presign via Buildium
+    1) Presign via Buildium: POST /v1/tasks/{taskId}/history/{historyId}/files/uploadrequests
     2) POST multipart/form-data to S3 BucketUrl with EXACT fields from FormData, file LAST
     Mirrors presigned Content-Type and X-Amz-Meta-Buildium-File-Name to satisfy S3 policy and Buildium finalize.
     """
     try:
         logging.info(f"[presign] start filename='{filename}', size={len(file_bytes)} bytes")
 
-        url_presign = f"{BASE_API}/{TASK_RESOURCE}/{task_id}/history/{history_id}/files/uploadrequests"
+        url_presign = f"{BASE_API}/{TASKS_RESOURCE}/{task_id}/history/{history_id}/files/uploadrequests"
         async with session.post(url_presign, json={"FileName": filename}, headers=headers) as r_pre:
             pre_text = await r_pre.text()
             if r_pre.status != 201:
@@ -177,7 +180,7 @@ async def _wait_for_files(session: aiohttp.ClientSession, task_id: int, history_
     Optional: poll for attachments to appear on the history entry.
     """
     import time, asyncio
-    url = f"{BASE_API}/{TASK_RESOURCE}/{task_id}/history/{history_id}/files"
+    url = f"{BASE_API}/{TASKS_RESOURCE}/{task_id}/history/{history_id}/files"
     deadline = time.monotonic() + timeout_s
     want = set([n.strip() for n in expected_names])
 
@@ -254,9 +257,9 @@ def split_pdf_bytes(pdf_bytes: bytes, max_bytes: int = 15 * 1024 * 1024) -> list
     return parts
 
 
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # Main entry
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 async def update_task(
     task_data: dict,
     increase_summary: dict,
@@ -345,12 +348,12 @@ async def update_task(
             )
 
         async with aiohttp.ClientSession() as session:
-            # 1) Create/Update task history message
+            # 1) Create/Update task history message (todorequests)
             ok_put = await _put_task_message(session, task_id, headers, title, assigned_to_user_id, taskcatid, msg)
             if not ok_put:
                 return False
 
-            # 2) Lock the HISTORY ID *now*
+            # 2) Lock the HISTORY ID *now* (tasks)
             history_id = await _get_latest_history_id(session, task_id, headers)
             if not history_id:
                 logging.error("Could not find latest history entry to attach files.")
@@ -358,7 +361,7 @@ async def update_task(
 
             logging.info(f"About to upload {len(part_names_and_bytes)} PDF part(s): {[n for n,_ in part_names_and_bytes]} + {json_filename}")
 
-            # 3) Upload each PDF part
+            # 3) Upload each PDF part (tasks)
             for part_filename, part_bytes in part_names_and_bytes:
                 logging.info(f"Uploading PDF: {part_filename} ({len(part_bytes)} bytes)")
                 ok_pdf = await _upload_file_for_history(
@@ -369,7 +372,7 @@ async def update_task(
                     logging.error(f"PDF upload failed for {part_filename}")
                     return False
 
-            # 4) Upload the JSON payload
+            # 4) Upload the JSON payload (tasks)
             logging.info(f"Uploading JSON: {json_filename} ({len(json_bytes)} bytes)")
             ok_json = await _upload_file_for_history(
                 session, task_id, history_id, headers,
