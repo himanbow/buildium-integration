@@ -1,5 +1,6 @@
 import aiohttp
 import os
+from io import BytesIO
 import logging
 import json
 from datetime import datetime, UTC
