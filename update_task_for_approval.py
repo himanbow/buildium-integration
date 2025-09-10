@@ -10,7 +10,25 @@ from pathlib import Path
 
 from build_prelim_increase_report import build_increase_report_pdf
 
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+# Ensure INFO logs are visible (won't override if already configured elsewhere)
+if not logging.getLogger().handlers:
+    logging.basicConfig(level=logging.INFO)
 
+# ---------------------------------------------------------------------------
+# API base + resource family
+# If your tenant expects plain 'tasks' endpoints for history/files, change to:
+#   TASK_RESOURCE = "tasks"
+# ---------------------------------------------------------------------------
+BASE_API = "https://api.buildium.com/v1"
+TASK_RESOURCE = "tasks/todorequests"
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 def _flatten_rows_from_summary(increase_summary: dict) -> list[dict]:
     rows = []
     for b_id, data in (increase_summary or {}).items():
@@ -20,10 +38,21 @@ def _flatten_rows_from_summary(increase_summary: dict) -> list[dict]:
             rows.append(inc)
     return rows
 
+
+def _parse_iso(dt_str: Optional[str]) -> datetime:
+    if not dt_str:
+        return datetime.min.replace(tzinfo=UTC)
+    try:
+        # Buildium often returns Z; normalize for fromisoformat
+        return datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+    except Exception:
+        return datetime.min.replace(tzinfo=UTC)
+
+
 async def _put_task_message(session: aiohttp.ClientSession, task_id: int, headers: dict,
                             title: str, assigned_to_user_id: int, taskcatid: int, msg: str) -> bool:
-    logging.info("Updating Task")
-    url_task = f"https://api.buildium.com/v1/tasks/todorequests/{task_id}"
+    logging.info("Updating task message/title/assignee...")
+    url_task = f"{BASE_API}/{TASK_RESOURCE}/{task_id}"
     payload = {
         "Title": title,
         "AssignedToUserId": assigned_to_user_id,
@@ -35,82 +64,144 @@ async def _put_task_message(session: aiohttp.ClientSession, task_id: int, header
         "Date": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
     }
     async with session.put(url_task, json=payload, headers=headers) as r:
+        body = await r.text()
         if r.status == 200:
-            logging.info("Task Updated")
+            logging.info("Task updated.")
             return True
-            
-        logging.error(f"Task PUT failed: {r.status} {await r.text()}")
+        logging.error(f"Task PUT failed: {r.status} {body[:500]}")
         return False
 
+
 async def _get_latest_history_id(session: aiohttp.ClientSession, task_id: int, headers: dict) -> Optional[int]:
-    url_hist = f"https://api.buildium.com/v1/tasks/{task_id}/history"
+    url_hist = f"{BASE_API}/{TASK_RESOURCE}/{task_id}/history"
     async with session.get(url_hist, headers=headers) as r_hist:
+        body = await r_hist.text()
         if r_hist.status != 200:
-            logging.error(f"History GET failed: {r_hist.status} {await r_hist.text()}")
+            logging.error(f"History GET failed: {r_hist.status} {body[:500]}")
             return None
-        hist = await r_hist.json()
-        if not hist:
-            return None
-        # If API returns newest-first, hist[0] is fine; otherwise sort by CreatedDate/Date
         try:
-            hist.sort(key=lambda h: h.get("Date") or h.get("CreatedDate") or "", reverse=True)
+            hist = json.loads(body)
+        except Exception as e:
+            logging.error(f"History JSON parse error: {e} body={body[:500]}")
+            return None
+
+        if not hist:
+            logging.error("History list empty; cannot lock an entry.")
+            return None
+
+        # Prefer newest by Date/CreatedDate
+        try:
+            hist.sort(key=lambda h: _parse_iso(h.get("Date") or h.get("CreatedDate")), reverse=True)
         except Exception:
             pass
-        return hist[0].get("Id")
+
+        hid = hist[0].get("Id")
+        logging.info(f"Locked history_id={hid}")
+        return hid
+
 
 async def _upload_file_for_history(session: aiohttp.ClientSession, task_id: int, history_id: int,
                                    headers: dict, filename: str, file_bytes: bytes,
                                    content_type: str) -> bool:
-    logging.info("Starting File Upload")
     """
-    1) POST /tasks/{taskId}/history/{historyId}/files/uploadrequests
-    2) POST to BucketUrl with multipart:
-       - include ALL fields from FormData in a stable order
-       - add 'file' field LAST
+    1) Presign via Buildium
+    2) POST multipart/form-data to S3 BucketUrl with EXACT fields from FormData, file LAST
+    Mirrors presigned Content-Type and X-Amz-Meta-Buildium-File-Name to satisfy S3 policy and Buildium finalize.
     """
-    # Step 1: presign
-    url_presign = f"https://api.buildium.com/v1/tasks/{task_id}/history/{history_id}/files/uploadrequests"
-    async with session.post(url_presign, json={"FileName": filename}, headers=headers) as r_pre:
-        if r_pre.status != 201:
-            logging.error(f"Upload request failed: {r_pre.status} {await r_pre.text()}")
+    try:
+        logging.info(f"[presign] start filename='{filename}', size={len(file_bytes)} bytes")
+
+        url_presign = f"{BASE_API}/{TASK_RESOURCE}/{task_id}/history/{history_id}/files/uploadrequests"
+        async with session.post(url_presign, json={"FileName": filename}, headers=headers) as r_pre:
+            pre_text = await r_pre.text()
+            if r_pre.status != 201:
+                logging.error(f"[presign] FAIL {r_pre.status} {pre_text[:500]}")
+                return False
+            try:
+                pre = json.loads(pre_text)
+            except Exception as e:
+                logging.error(f"[presign] JSON parse error: {e} body={pre_text[:500]}")
+                return False
+
+        form = pre.get("FormData") or {}
+        bucket_url = pre.get("BucketUrl")
+        if not bucket_url or not form:
+            logging.error("[presign] Missing BucketUrl or FormData.")
             return False
-        pre = await r_pre.json()
 
-    form = pre.get("FormData", {})
-    bucket_url = pre.get("BucketUrl")
-    if not bucket_url or not form:
-        logging.error("Upload request missing BucketUrl or FormData.")
+        # Normalize + mirror presigned values
+        form = {str(k): ("" if v is None else str(v)) for k, v in form.items()}
+        file_ct   = form.get("Content-Type", content_type)
+        file_name = form.get("X-Amz-Meta-Buildium-File-Name", filename)
+
+        logging.info(f"[presign] ok Key={form.get('Key')} CT={file_ct} BuildiumName='{file_name}'")
+
+        ordered_keys = [
+            "Key", "ACL", "Policy", "Content-Type", "Content-Disposition",
+            "X-Amz-Algorithm", "X-Amz-Credential", "X-Amz-Date", "X-Amz-Signature",
+            "X-Amz-Meta-Buildium-Entity-Type", "X-Amz-Meta-Buildium-Entity-Id",
+            "X-Amz-Meta-Buildium-File-Source", "X-Amz-Meta-Buildium-File-Description",
+            "X-Amz-Meta-Buildium-Account-Id", "X-Amz-Meta-Buildium-File-Name",
+            "X-Amz-Meta-Buildium-File-Title", "X-Amz-Meta-Buildium-Child-Entity-Id",
+            "X-Amz-Meta-Buildium-Finalize-Upload-Message-Version",
+            "success_action_status", "success_action_redirect",
+        ]
+
+        # Avoid surprising quoting that can break S3 policies
+        form_data = aiohttp.FormData(quote_fields=False)
+        for k in ordered_keys:
+            if k in form:
+                form_data.add_field(k, form[k])
+        for k, v in form.items():
+            if k not in ordered_keys:
+                form_data.add_field(k, v)
+
+        # file LAST; match presigned CT/name if present
+        form_data.add_field("file", file_bytes, filename=file_name, content_type=file_ct)
+
+        logging.info(f"[upload] POST {bucket_url}")
+        async with session.post(bucket_url, data=form_data) as resp:
+            body = await resp.text()
+            if resp.status in (204, 200, 201):
+                logging.info(f"[upload] OK {resp.status} '{file_name}' body={body[:200]}")
+                return True
+            logging.error(f"[upload] FAIL {resp.status} '{file_name}' body={body[:500]}")
+            return False
+
+    except Exception as e:
+        logging.exception(f"[upload] Exception '{filename}': {e}")
         return False
-    logging.info("File Presign Completed")
-    # Maintain expected field order; ensure file last
-    ordered_keys = [
-        "Key", "ACL", "Policy", "Content-Type", "Content-Disposition",
-        "X-Amz-Algorithm", "X-Amz-Credential", "X-Amz-Date", "X-Amz-Signature",
-        "X-Amz-Meta-Buildium-Entity-Type", "X-Amz-Meta-Buildium-Entity-Id",
-        "X-Amz-Meta-Buildium-File-Source", "X-Amz-Meta-Buildium-File-Description",
-        "X-Amz-Meta-Buildium-Account-Id", "X-Amz-Meta-Buildium-File-Name",
-        "X-Amz-Meta-Buildium-File-Title", "X-Amz-Meta-Buildium-Child-Entity-Id",
-        "X-Amz-Meta-Buildium-Finalize-Upload-Message-Version",
-    ]
-    form_data = aiohttp.FormData()
-    for k in ordered_keys:
-        if k in form:
-            form_data.add_field(k, form[k])
-    for k, v in form.items():
-        if k not in ordered_keys:
-            form_data.add_field(k, v)
 
-    form_data.add_field("file", file_bytes, filename=filename, content_type=content_type)
 
-    # Step 2: upload to S3 BucketUrl
-    async with session.post(bucket_url, data=form_data) as upload_response:
-        if upload_response.status in (204, 200, 201):
-            logging.info(f"Upload successful: {filename}")
-            return True
-        logging.error(f"Error Uploading File {filename}: {upload_response.status} {await upload_response.text()}")
-        return False
+async def _wait_for_files(session: aiohttp.ClientSession, task_id: int, history_id: int, headers: dict,
+                          expected_names: list[str], timeout_s: int = 30) -> bool:
+    """
+    Optional: poll for attachments to appear on the history entry.
+    """
+    import time, asyncio
+    url = f"{BASE_API}/{TASK_RESOURCE}/{task_id}/history/{history_id}/files"
+    deadline = time.monotonic() + timeout_s
+    want = set([n.strip() for n in expected_names])
 
-def split_pdf_bytes(pdf_bytes: bytes, max_bytes: int = 15 * 1024 * 1024):
+    logging.info(f"Polling for files to appear on history {history_id}: {sorted(want)}")
+    while time.monotonic() < deadline:
+        async with session.get(url, headers=headers) as r:
+            body = await r.text()
+            if r.status == 200:
+                try:
+                    items = json.loads(body) or []
+                except Exception:
+                    items = []
+                names = { (i.get("FileName") or i.get("Title") or "").strip() for i in items }
+                if want.issubset(names):
+                    logging.info("All attachments visible on history.")
+                    return True
+        await asyncio.sleep(1.5)
+    logging.warning("Attachments did not appear within timeout.")
+    return False
+
+
+def split_pdf_bytes(pdf_bytes: bytes, max_bytes: int = 15 * 1024 * 1024) -> list[bytes]:
     """
     Split a PDF (as bytes) into multiple PDFs, each <= max_bytes, on page boundaries.
     Returns list[bytes]; each element is a complete PDF file.
@@ -127,7 +218,7 @@ def split_pdf_bytes(pdf_bytes: bytes, max_bytes: int = 15 * 1024 * 1024):
     i = 0
     while i < n:
         writer = PdfWriter()
-        # (Optional) carry metadata
+        # carry metadata if available
         try:
             if getattr(reader, "metadata", None):
                 writer.add_metadata(reader.metadata)
@@ -154,7 +245,7 @@ def split_pdf_bytes(pdf_bytes: bytes, max_bytes: int = 15 * 1024 * 1024):
             parts.append(last_good)
             i = last_end
         else:
-            # Single page > limit: emit it alone anyway
+            # Single page > limit: emit it alone
             writer = PdfWriter()
             writer.add_page(reader.pages[i])
             buf = BytesIO()
@@ -164,20 +255,25 @@ def split_pdf_bytes(pdf_bytes: bytes, max_bytes: int = 15 * 1024 * 1024):
 
     return parts
 
+
+# ---------------------------------------------------------------------------
+# Main entry
+# ---------------------------------------------------------------------------
 async def update_task(
     task_data: dict,
     increase_summary: dict,
     increase_effective_date,
     percentage: float | str,
     headers: dict,
-    account_id: int | str,
-    buildingjsonfile,                  # required
+    account_id: int | str,   # unused here but kept for signature parity
+    buildingjsonfile,        # required (dict/str/bytes)
     logo_source: str | None = None,
+    poll_finalize: bool = False,  # set True to verify attachments appear
 ) -> bool:
     try:
-        task_id = task_data["Id"]
-        taskcatid = task_data["Category"]["Id"]
-        assigned_to_user_id = task_data["AssignedToUserId"]
+        task_id = int(task_data["Id"])
+        taskcatid = int(task_data["Category"]["Id"])
+        assigned_to_user_id = int(task_data["AssignedToUserId"])
         title = f"Increase Notices for {increase_effective_date.strftime('%B %d, %Y')} - Review"
 
         rows = _flatten_rows_from_summary(increase_summary)
@@ -187,13 +283,12 @@ async def update_task(
 
         run_date = datetime.now(UTC).strftime("%Y-%m-%d")
         eff_str = increase_effective_date.strftime("%B %d, %Y")
-        pdf_filename  = f"Increase Review Report {increase_effective_date.strftime('%B %d, %Y')}.pdf"
+        pdf_filename  = f"Increase Review Report {eff_str}.pdf"
         json_filename = "data.json"
 
-       # Generate PDF
+        # Build the PDF to a temp file and read bytes
         with NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_pdf:
             pdf_path = tmp_pdf.name
-            logging.info(f"File Name: {pdf_path}.")
 
         try:
             build_increase_report_pdf(
@@ -211,15 +306,15 @@ async def update_task(
                 os.remove(pdf_path)
             except Exception:
                 pass
-        
+
         # Split to <=15MB parts
         parts = split_pdf_bytes(pdf_bytes, max_bytes=15 * 1024 * 1024)
-        
+
         # Name parts predictably (foo.pdf -> foo_part01.pdf, etc.; single-part keeps original)
-        orig_name = Path(pdf_filename).name  # whatever you were using (e.g., "Increase Report.pdf")
+        orig_name = Path(pdf_filename).name
         stem = Path(orig_name).stem
         suffix = Path(orig_name).suffix or ".pdf"
-        
+
         if len(parts) == 1:
             part_names_and_bytes = [(orig_name, parts[0])]
         else:
@@ -227,8 +322,7 @@ async def update_task(
                 (f"{stem}_part{idx+1:02d}{suffix}", b) for idx, b in enumerate(parts)
             ]
 
-
-        # Normalize provided JSON to bytes (guaranteed provided)
+        # Normalize provided JSON to bytes
         if isinstance(buildingjsonfile, (bytes, bytearray)):
             json_bytes = bytes(buildingjsonfile)
         elif isinstance(buildingjsonfile, str):
@@ -236,28 +330,49 @@ async def update_task(
         else:
             json_bytes = json.dumps(buildingjsonfile, default=str, indent=2).encode("utf-8")
 
+        # Compose task message (mention multi-part if applicable)
+        if len(part_names_and_bytes) == 1:
+            msg = (
+                f'Please review "{orig_name}" for the increase notices. '
+                'Should you require any changes, complete the changes, delete this task, '
+                'and create a new task entitled "Increase Notices" with the task category set to "System Tasks".'
+            )
+        else:
+            part_list = ", ".join([name for name, _ in part_names_and_bytes])
+            msg = (
+                f'Please review the report files ({part_list}) for the increase notices. '
+                'The report was split into parts to keep each file under 15 MB. '
+                'If changes are required, complete them, delete this task, and create a new task entitled '
+                '"Increase Notices" with the task category set to "System Tasks".'
+            )
+
         async with aiohttp.ClientSession() as session:
-            # 1) Create a new history entry with the message
-            msg = f'Please review "{pdf_filename}" for the increase notices. Should you required any changes, complete the changes, delete this task, and create a new task entilted "Increase Notices" with the task category set to "System Tasks'
+            # 1) Create/Update task history message
             ok_put = await _put_task_message(session, task_id, headers, title, assigned_to_user_id, taskcatid, msg)
             if not ok_put:
                 return False
 
-            # 2) Lock the HISTORY ID *now* (don’t fetch “latest” again after uploads)
+            # 2) Lock the HISTORY ID *now*
             history_id = await _get_latest_history_id(session, task_id, headers)
             if not history_id:
                 logging.error("Could not find latest history entry to attach files.")
                 return False
 
-            # 3) Upload every part to the SAME history_id
+            logging.info(f"About to upload {len(part_names_and_bytes)} PDF part(s): {[n for n,_ in part_names_and_bytes]} + {json_filename}")
+
+            # 3) Upload each PDF part
             for part_filename, part_bytes in part_names_and_bytes:
+                logging.info(f"Uploading PDF: {part_filename} ({len(part_bytes)} bytes)")
                 ok_pdf = await _upload_file_for_history(
                     session, task_id, history_id, headers,
                     part_filename, part_bytes, content_type="application/pdf"
                 )
                 if not ok_pdf:
+                    logging.error(f"PDF upload failed for {part_filename}")
                     return False
 
+            # 4) Upload the JSON payload
+            logging.info(f"Uploading JSON: {json_filename} ({len(json_bytes)} bytes)")
             ok_json = await _upload_file_for_history(
                 session, task_id, history_id, headers,
                 json_filename, json_bytes, content_type="application/json"
@@ -266,6 +381,12 @@ async def update_task(
                 logging.error("JSON upload failed.")
                 return False
 
+            # 5) Optional: verify attachments appeared (Buildium finalize)
+            if poll_finalize:
+                expected = [name for name, _ in part_names_and_bytes] + [json_filename]
+                await _wait_for_files(session, task_id, history_id, headers, expected_names=expected, timeout_s=30)
+
+            logging.info("Task update completed successfully.")
             return True
 
     except Exception as e:
