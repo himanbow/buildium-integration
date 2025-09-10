@@ -11,19 +11,19 @@ from pathlib import Path
 from build_prelim_increase_report import build_increase_report_pdf
 
 # ---------------------------------------------------------------------------
-# Logging
+# Logging (won't override if you've already configured handlers elsewhere)
 # ---------------------------------------------------------------------------
-# Ensure INFO logs are visible (won't override if already configured elsewhere)
 if not logging.getLogger().handlers:
     logging.basicConfig(level=logging.INFO)
 
 # ---------------------------------------------------------------------------
 # API base + resource family
-# If your tenant expects plain 'tasks' endpoints for history/files, change to:
+# If your tenant expects plain 'tasks' endpoints for history/files, set:
 #   TASK_RESOURCE = "tasks"
+# Otherwise, keep "tasks/todorequests"
 # ---------------------------------------------------------------------------
 BASE_API = "https://api.buildium.com/v1"
-TASK_RESOURCE = "tasks/todorequests"
+TASK_RESOURCE = "tasks/todorequests"  # <-- change to "tasks" if needed
 
 
 # ---------------------------------------------------------------------------
@@ -43,7 +43,6 @@ def _parse_iso(dt_str: Optional[str]) -> datetime:
     if not dt_str:
         return datetime.min.replace(tzinfo=UTC)
     try:
-        # Buildium often returns Z; normalize for fromisoformat
         return datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
     except Exception:
         return datetime.min.replace(tzinfo=UTC)
@@ -89,7 +88,6 @@ async def _get_latest_history_id(session: aiohttp.ClientSession, task_id: int, h
             logging.error("History list empty; cannot lock an entry.")
             return None
 
-        # Prefer newest by Date/CreatedDate
         try:
             hist.sort(key=lambda h: _parse_iso(h.get("Date") or h.get("CreatedDate")), reverse=True)
         except Exception:
