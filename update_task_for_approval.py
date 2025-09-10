@@ -6,6 +6,7 @@ import json
 from datetime import datetime, UTC
 from tempfile import NamedTemporaryFile
 from typing import Optional
+from pathlib import Path
 
 from build_prelim_increase_report import build_increase_report_pdf
 
