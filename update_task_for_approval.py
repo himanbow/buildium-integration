@@ -104,6 +104,60 @@ async def _upload_file_for_history(session: aiohttp.ClientSession, task_id: int,
         logging.error(f"Error Uploading File {filename}: {upload_response.status} {await upload_response.text()}")
         return False
 
+def split_pdf_bytes(pdf_bytes: bytes, max_bytes: int = 15 * 1024 * 1024):
+    """
+    Split a PDF (as bytes) into multiple PDFs, each <= max_bytes, on page boundaries.
+    Returns list[bytes]; each element is a complete PDF file.
+    """
+    try:
+        from pypdf import PdfReader, PdfWriter
+    except Exception:
+        from PyPDF2 import PdfReader, PdfWriter  # type: ignore
+
+    reader = PdfReader(BytesIO(pdf_bytes))
+    n = len(reader.pages)
+    parts: list[bytes] = []
+
+    i = 0
+    while i < n:
+        writer = PdfWriter()
+        # (Optional) carry metadata
+        try:
+            if getattr(reader, "metadata", None):
+                writer.add_metadata(reader.metadata)
+        except Exception:
+            pass
+
+        last_good = None
+        last_end = None
+
+        j = i
+        while j < n:
+            writer.add_page(reader.pages[j])
+            buf = BytesIO()
+            writer.write(buf)
+            size_now = buf.tell()
+            if size_now <= max_bytes:
+                last_good = buf.getvalue()
+                last_end = j + 1
+                j += 1
+            else:
+                break
+
+        if last_good is not None:
+            parts.append(last_good)
+            i = last_end
+        else:
+            # Single page > limit: emit it alone anyway
+            writer = PdfWriter()
+            writer.add_page(reader.pages[i])
+            buf = BytesIO()
+            writer.write(buf)
+            parts.append(buf.getvalue())
+            i += 1
+
+    return parts
+
 async def update_task(
     task_data: dict,
     increase_summary: dict,
@@ -130,10 +184,10 @@ async def update_task(
         pdf_filename  = f"Increase Review Report {increase_effective_date.strftime('%B %d, %Y')}.pdf"
         json_filename = "data.json"
 
-        # Generate PDF
-        from tempfile import NamedTemporaryFile
+       # Generate PDF
         with NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_pdf:
             pdf_path = tmp_pdf.name
+
         try:
             build_increase_report_pdf(
                 pdf_path,
@@ -146,8 +200,26 @@ async def update_task(
             with open(pdf_path, "rb") as f:
                 pdf_bytes = f.read()
         finally:
-            try: os.remove(pdf_path)
-            except Exception: pass
+            try:
+                os.remove(pdf_path)
+            except Exception:
+                pass
+        
+        # Split to <=15MB parts
+        parts = split_pdf_bytes(pdf_bytes, max_bytes=15 * 1024 * 1024)
+        
+        # Name parts predictably (foo.pdf -> foo_part01.pdf, etc.; single-part keeps original)
+        orig_name = Path(pdf_filename).name  # whatever you were using (e.g., "Increase Report.pdf")
+        stem = Path(orig_name).stem
+        suffix = Path(orig_name).suffix or ".pdf"
+        
+        if len(parts) == 1:
+            part_names_and_bytes = [(orig_name, parts[0])]
+        else:
+            part_names_and_bytes = [
+                (f"{stem}_part{idx+1:02d}{suffix}", b) for idx, b in enumerate(parts)
+            ]
+
 
         # Normalize provided JSON to bytes (guaranteed provided)
         if isinstance(buildingjsonfile, (bytes, bytearray)):
@@ -170,13 +242,14 @@ async def update_task(
                 logging.error("Could not find latest history entry to attach files.")
                 return False
 
-            # 3) Upload BOTH files to the SAME locked history_id
-            ok_pdf = await _upload_file_for_history(
-                session, task_id, history_id, headers,
-                pdf_filename, pdf_bytes, content_type="application/pdf"
-            )
-            if not ok_pdf:
-                return False
+            # 3) Upload every part to the SAME history_id
+            for part_filename, part_bytes in part_names_and_bytes:
+                ok_pdf = await _upload_file_for_history(
+                    session, task_id, history_id, headers,
+                    part_filename, part_bytes, content_type="application/pdf"
+                )
+                if not ok_pdf:
+                    return False
 
             ok_json = await _upload_file_for_history(
                 session, task_id, history_id, headers,
