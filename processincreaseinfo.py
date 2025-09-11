@@ -406,153 +406,216 @@ async def addtosummary(filepath, summary_writer):
         logging.error(f"Error adding to summary: {e}")
         return False
 
+
+# -------------------- per-building processing --------------------
+async def process_building(
+    buildingid,
+    data,
+    headers,
+    session,
+    datelabel,
+    categoryid,
+    counter,
+    count_lock,
+):
+    """Handle all leases for a single building and update global counters."""
+
+    # Skip if no leases at all
+    if not data.get("lease_info"):
+        return
+
+    # Extract building name (from first lease row)
+    buildingname = _safe_get(
+        data["lease_info"][0], ["buildingname"], f"Building {buildingid}"
+    )
+
+    # Determine if at least one lease needs a notice
+    has_active = any(
+        not _is_ignored(lease.get("ignored")) for lease in data["lease_info"]
+    )
+
+    # Only create a task for this building if there is at least one non-ignored lease
+    taskid = None
+    if has_active and data.get("ignorebuilding") != "Y":
+        taskid = await createtask(headers, buildingid, session, datelabel)
+
+    # Fresh summary state per building
+    summary_writer = PdfWriter()
+    summary_index = 1
+    summary_data = []
+    countbuilding = 0
+    current_summary_size = 0
+    summary_paths = []
+    size_limit = 19 * 1024 * 1024  # ~19MB
+
+    # Per-lease processing -- concurrently generate & upload
+    total_leases = len(data["lease_info"])
+
+    async def handle_lease(i, lease):
+        leaseid = lease["leaseid"]
+        logging.info(
+            f"[{buildingid}] Lease {i}/{total_leases} → id={leaseid}, ignored={lease.get('ignored')!r}"
+        )
+
+        if _is_ignored(lease.get("ignored")):
+            logging.info(
+                f"[{buildingid}] Skipped lease renewal for ignored lease {leaseid}."
+            )
+            return None
+
+        leaseincreaseinfo = lease["increasenotice"]
+
+        # Generate individual N1
+        filepath = await generateN1files(leaseid, leaseincreaseinfo)
+        if not filepath:
+            logging.error(f"Failed N1 generation for {leaseid}")
+            return None
+
+        # Upload individual N1 to the lease
+        confirmlease = False
+        if categoryid is None:
+            logging.error("No category id available for lease uploads.")
+        else:
+            confirmlease = await uploadN1filestolease(
+                headers, filepath, leaseid, session, categoryid
+            )
+
+        return lease, filepath, confirmlease
+
+    tasks = [handle_lease(i, lease) for i, lease in enumerate(data["lease_info"], 1)]
+    results = await asyncio.gather(*tasks)
+
+    # Integrate results sequentially for summary creation
+    for res in results:
+        if not res:
+            continue
+
+        lease, filepath, confirmlease = res
+
+        # Determine size of this lease PDF
+        try:
+            file_stat = await aiofiles.os.stat(filepath)
+            lease_size = file_stat.st_size
+        except Exception:
+            lease_size = 0
+
+        # If adding this lease would exceed the limit, flush current summary to disk
+        if (
+            current_summary_size + lease_size > size_limit
+            and len(summary_writer.pages) > 0
+        ):
+            summary_buffer = io.BytesIO()
+            summary_writer.write(summary_buffer)
+            part_path = os.path.join(
+                "/tmp", f"Notices for {buildingname} {datelabel} Part {summary_index}.pdf"
+            )
+            async with aiofiles.open(part_path, "wb") as f:
+                await f.write(summary_buffer.getvalue())
+            summary_paths.append(part_path)
+            summary_index += 1
+            summary_writer = PdfWriter()
+            current_summary_size = 0
+
+        ok = await addtosummary(filepath, summary_writer)
+
+        if ok and confirmlease:
+            try:
+                await aiofiles.os.remove(filepath)
+            except Exception as e:
+                logging.error(f"Cleanup failed for lease file {filepath}: {e}")
+
+        if ok:
+            current_summary_size += lease_size
+            async with count_lock:
+                counter["countall"] += 1
+            countbuilding += 1
+            summary_data.append(lease)
+
+    # Finalize & upload building summary (if any non-ignored leases and not ignoring building)
+    if summary_data and data.get("ignorebuilding") != "Y" and taskid:
+        summary_file_path = os.path.join(
+            "/tmp", f"Notices for {buildingname} {datelabel} Part {summary_index}.pdf"
+        )
+
+        await add_summary_page(
+            summary_data,
+            summary_writer,
+            summary_file_path,
+            buildingname,
+            countbuilding,
+            datelabel,
+        )
+
+        summary_paths.append(summary_file_path)
+
+        for path in summary_paths:
+            ok_summary = await uploadsummarytotask(
+                headers, path, taskid, session, categoryid
+            )
+            if ok_summary:
+                logging.info(
+                    f"Summary for {buildingname} uploaded to task: {path}."
+                )
+            else:
+                logging.error(
+                    f"Summary upload failed for {buildingname}: {path}."
+                )
+    else:
+        if data.get("ignorebuilding") == "Y":
+            logging.info(
+                f"Skipping PDF summary & task for building {buildingid} (ignorebuilding=Y)"
+            )
+        elif not summary_data:
+            logging.info(
+                f"No non-ignored leases for building {buildingid}; no summary uploaded."
+            )
+
 # -------------------- main entry --------------------
 async def process(headers, increaseinfo, accountid):
     """Main orchestration: generate N1s, roll summaries, upload to leases & tasks."""
-    countall = 0
+    counter = {"countall": 0}
     categoryid = None
     datelabel = None
-    initialized_category = False
+    count_lock = asyncio.Lock()
 
     try:
         async with aiohttp.ClientSession() as session:
-            # increaseinfo is a list of {"building_id": { ... }} dicts
+            # Determine date label & category once based on the first available lease
             for buildingdata in increaseinfo:
-                for buildingid, data in buildingdata.items():
-                    # Skip if no leases at all
-                    if not data.get('lease_info'):
-                        continue
-
-                    # Extract building name (from first lease row)
-                    buildingname = _safe_get(data['lease_info'][0], ['buildingname'], f"Building {buildingid}")
-
-                    # Determine if at least one lease needs a notice
-                    has_active = any(not _is_ignored(lease.get('ignored')) for lease in data['lease_info'])
-
-                    # This block (date label + category) should run once for the overall run
-                    if not initialized_category:
-                        first_lease_to = _safe_get(data['lease_info'][0], ['renewal', 'LeaseToDate'])
+                for _, data in buildingdata.items():
+                    if data.get("lease_info"):
+                        first_lease_to = _safe_get(
+                            data["lease_info"][0], ["renewal", "LeaseToDate"]
+                        )
                         if first_lease_to:
-                            datelabel = datetime.strptime(first_lease_to, "%Y-%m-%d").strftime("%B %d, %Y")
+                            datelabel = datetime.strptime(
+                                first_lease_to, "%Y-%m-%d"
+                            ).strftime("%B %d, %Y")
                         else:
                             datelabel = datetime.utcnow().strftime("%B %d, %Y")
                         categoryid = await category(headers, session, datelabel)
-                        initialized_category = True
+                        break
+                if datelabel:
+                    break
 
-                    # Only create a task for this building if there is at least one non-ignored lease
-                    taskid = None
-                    if has_active and data.get('ignorebuilding') != "Y":
-                        taskid = await createtask(headers, buildingid, session, datelabel)
-
-                    # Fresh summary state per building
-                    summary_writer = PdfWriter()
-                    summary_index = 1
-                    summary_data = []
-                    countbuilding = 0
-                    current_summary_size = 0
-                    summary_paths = []
-                    size_limit = 19 * 1024 * 1024  # ~19MB
-
-                    # Per-lease processing -- concurrently generate & upload
-                    total_leases = len(data['lease_info'])
-
-                    async def handle_lease(i, lease):
-                        leaseid = lease['leaseid']
-                        logging.info(
-                            f"[{buildingid}] Lease {i}/{total_leases} → id={leaseid}, ignored={lease.get('ignored')!r}"
-                        )
-
-                        if _is_ignored(lease.get('ignored')):
-                            logging.info(f"[{buildingid}] Skipped lease renewal for ignored lease {leaseid}.")
-                            return None
-
-                        leaseincreaseinfo = lease['increasenotice']
-
-                        # Generate individual N1
-                        filepath = await generateN1files(leaseid, leaseincreaseinfo)
-                        if not filepath:
-                            logging.error(f"Failed N1 generation for {leaseid}")
-                            return None
-
-                        # Upload individual N1 to the lease
-                        confirmlease = False
-                        if categoryid is None:
-                            logging.error("No category id available for lease uploads.")
-                        else:
-                            confirmlease = await uploadN1filestolease(headers, filepath, leaseid, session, categoryid)
-
-                        return lease, filepath, confirmlease
-
-                    tasks = [handle_lease(i, lease) for i, lease in enumerate(data['lease_info'], 1)]
-                    results = await asyncio.gather(*tasks)
-
-
-                    # Integrate results sequentially for summary creation
-                    for res in results:
-                        if not res:
-                            continue
-
-                        lease, filepath, confirmlease = res
-
-                        # Determine size of this lease PDF
-                        try:
-                            file_stat = await aiofiles.os.stat(filepath)
-                            lease_size = file_stat.st_size
-                        except Exception:
-                            lease_size = 0
-
-                        # If adding this lease would exceed the limit, flush current summary to disk
-                        if current_summary_size + lease_size > size_limit and len(summary_writer.pages) > 0:
-                            summary_buffer = io.BytesIO()
-                            summary_writer.write(summary_buffer)
-                            part_path = os.path.join(
-                                '/tmp', f"Notices for {buildingname} {datelabel} Part {summary_index}.pdf"
-                            )
-                            async with aiofiles.open(part_path, 'wb') as f:
-                                await f.write(summary_buffer.getvalue())
-                            summary_paths.append(part_path)
-                            summary_index += 1
-                            summary_writer = PdfWriter()
-                            current_summary_size = 0
-
-                        ok = await addtosummary(filepath, summary_writer)
-
-                        if ok and confirmlease:
-                            try:
-                                await aiofiles.os.remove(filepath)
-                            except Exception as e:
-                                logging.error(f"Cleanup failed for lease file {filepath}: {e}")
-
-                        if ok:
-                            current_summary_size += lease_size
-                            countall += 1
-                            countbuilding += 1
-                            summary_data.append(lease)
-                    # Finalize & upload building summary (if any non-ignored leases and not ignoring building)
-                    if summary_data and data.get('ignorebuilding') != "Y" and taskid:
-                        summary_file_path = os.path.join(
-                            '/tmp', f"Notices for {buildingname} {datelabel} Part {summary_index}.pdf"
-                        )
-
-                        await add_summary_page(
-                            summary_data, summary_writer, summary_file_path, buildingname, countbuilding, datelabel
-                        )
-
-                        summary_paths.append(summary_file_path)
-
-                        for path in summary_paths:
-                            ok_summary = await uploadsummarytotask(headers, path, taskid, session, categoryid)
-                            if ok_summary:
-                                logging.info(f"Summary for {buildingname} uploaded to task: {path}.")
-                            else:
-                                logging.error(f"Summary upload failed for {buildingname}: {path}.")
-                    else:
-                        if data.get('ignorebuilding') == "Y":
-                            logging.info(f"Skipping PDF summary & task for building {buildingid} (ignorebuilding=Y)")
-                        elif not summary_data:
-                            logging.info(f"No non-ignored leases for building {buildingid}; no summary uploaded.")
-
+            await asyncio.gather(
+                *(
+                    process_building(
+                        buildingid,
+                        data,
+                        headers,
+                        session,
+                        datelabel,
+                        categoryid,
+                        counter,
+                        count_lock,
+                    )
+                    for buildingdata in increaseinfo
+                    for buildingid, data in buildingdata.items()
+                    if data.get("lease_info")
+                )
+            )
     except Exception as e:
         logging.error(f"Error processing leases data: {e}")
 
-    print(countall)
+    print(counter["countall"])
