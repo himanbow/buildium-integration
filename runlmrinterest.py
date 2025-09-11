@@ -3,6 +3,8 @@ import logging
 import aiohttp
 from collections import defaultdict
 
+from rate_limiter import semaphore
+
 # ---------------- dates ----------------
 async def getdates():
     logging.info("Setting LMR Interest Dates")
@@ -35,12 +37,13 @@ async def get_leases(session: aiohttp.ClientSession, headers: dict):
             "limit": limit,
             "offset": offset,
         }
-        async with session.get(url, headers=headers, params=params) as resp:
-            if resp.status != 200:
-                txt = await resp.text()
-                logging.error(f"get_leases failed: {resp.status} {txt}")
-                break
-            batch = await resp.json()
+        async with semaphore:
+            async with session.get(url, headers=headers, params=params) as resp:
+                if resp.status != 200:
+                    txt = await resp.text()
+                    logging.error(f"get_leases failed: {resp.status} {txt}")
+                    break
+                batch = await resp.json()
         if not batch:
             break
         all_leases.extend(batch)
@@ -70,11 +73,12 @@ async def lmrbalance(headers: dict, leases: list, session: aiohttp.ClientSession
 
         while True:
             params = {"limit": limit, "offset": offset}
-            async with session.get(url, headers=headers, params=params) as resp:
-                if resp.status != 200:
-                    logging.error(f"Tx fetch {leaseid} failed: {resp.status} {await resp.text()}")
-                    break
-                batch = await resp.json()
+            async with semaphore:
+                async with session.get(url, headers=headers, params=params) as resp:
+                    if resp.status != 200:
+                        logging.error(f"Tx fetch {leaseid} failed: {resp.status} {await resp.text()}")
+                        break
+                    batch = await resp.json()
             if not batch:
                 break
             all_tx.extend(batch)
@@ -148,13 +152,14 @@ async def reportbuildingtotals(session: aiohttp.ClientSession, interest_and_ids:
     result = {}
     for prop_id, total in totals_by_property_id.items():
         url = f"https://api.buildium.com/v1/rentals/{prop_id}"
-        async with session.get(url, headers=headers) as resp:
-            if resp.status != 200:
-                logging.error(f"rental GET {prop_id} failed: {resp.status} {await resp.text()}")
-                name = f"Property {prop_id}"
-            else:
-                data = await resp.json()
-                name = data.get("Name") or f"Property {prop_id}"
+        async with semaphore:
+            async with session.get(url, headers=headers) as resp:
+                if resp.status != 200:
+                    logging.error(f"rental GET {prop_id} failed: {resp.status} {await resp.text()}")
+                    name = f"Property {prop_id}"
+                else:
+                    data = await resp.json()
+                    name = data.get("Name") or f"Property {prop_id}"
         result[name] = round(total, 2)
     logging.info("Completed Building LMR Interest Breakdown")
     return result
@@ -174,11 +179,12 @@ async def _put_task_message(session, task_id: int, headers: dict,
         "Message": msg,
         "Date": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
     }
-    async with session.put(url_task, json=payload, headers=headers) as r:
-        if r.status == 200:
-            return True
-        logging.error(f"Task PUT failed: {r.status} {await r.text()}")
-        return False
+    async with semaphore:
+        async with session.put(url_task, json=payload, headers=headers) as r:
+            if r.status == 200:
+                return True
+            logging.error(f"Task PUT failed: {r.status} {await r.text()}")
+            return False
 
 async def updatetask(task_data, headers, session, lmr_report_data: dict, month_label: str):
     try:

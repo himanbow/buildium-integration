@@ -84,13 +84,14 @@ async def get_leases(session, headers, increase_effective_date):
             'offset': offset,
         }
         
-        async with session.get(url, headers=headers, params=params) as response:
-            leases = await response.json()
-            if not leases:
-                break
+        async with semaphore:
+            async with session.get(url, headers=headers, params=params) as response:
+                leases = await response.json()
+                if not leases:
+                    break
 
-            all_leases.extend(leases)
-            offset += limit
+                all_leases.extend(leases)
+                offset += limit
 
     logging.info(f"Fetched {len(all_leases)} leases")
     return all_leases
