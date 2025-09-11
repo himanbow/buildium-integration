@@ -9,8 +9,7 @@ import aiofiles.os
 from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
 
-# Limit concurrent outbound requests globally
-semaphore = asyncio.Semaphore(2)
+from rate_limiter import semaphore
 
 # -------------------- small helpers --------------------
 def _is_ignored(v) -> bool:

@@ -5,8 +5,9 @@ from collections import defaultdict
 import logging
 import re
 
+from rate_limiter import semaphore
+
 building_notes_cache = {}
-semaphore = asyncio.Semaphore(2)
 
 async def fetch_data(session, url, headers):
     """Fetch data asynchronously with rate limiting and semaphore control."""
