@@ -9,14 +9,14 @@ from rate_limiter import semaphore
 
 building_notes_cache = {}
 
-async def fetch_data(session, url, headers):
+async def fetch_data(session, url, headers, params=None):
     """Fetch data asynchronously with rate limiting and semaphore control."""
     logging.info("Fetching Data From Buildium")
     try:
         # Limit concurrent requests using semaphore
         async with semaphore:
             while True:
-                async with session.get(url, headers=headers) as response:
+                async with session.get(url, headers=headers, params=params) as response:
                     status_code = response.status
                     data = await response.json()
 
@@ -83,15 +83,13 @@ async def get_leases(session, headers, increase_effective_date):
             'limit': limit,
             'offset': offset,
         }
-        
-        async with semaphore:
-            async with session.get(url, headers=headers, params=params) as response:
-                leases = await response.json()
-                if not leases:
-                    break
 
-                all_leases.extend(leases)
-                offset += limit
+        leases = await fetch_data(session, url, headers, params=params)
+        if not leases:
+            break
+
+        all_leases.extend(leases)
+        offset += limit
 
     logging.info(f"Fetched {len(all_leases)} leases")
     return all_leases
