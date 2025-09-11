@@ -3,6 +3,7 @@ import logging
 import asyncio
 import os
 import io
+import time
 import generateN1notice
 from PyPDF2 import PdfReader, PdfWriter
 import aiofiles
@@ -190,6 +191,7 @@ async def uploadN1filestolease(headers, filename, file_bytes, leaseid, session, 
             "CategoryId": categoryid,
         }
         async with semaphore, throttle:
+            presign_start = time.perf_counter()
             async with session.post(url, json=body, headers=headers) as response:
                 if response.status != 201:
                     logging.info(
@@ -199,6 +201,10 @@ async def uploadN1filestolease(headers, filename, file_bytes, leaseid, session, 
 
                 payload = await response.json()
                 form_data, bucket_url = await amazondatalease(payload)
+            presign_elapsed = time.perf_counter() - presign_start
+        logging.info(
+            f"[presign lease] lease={leaseid} file='{filename}' took {presign_elapsed:.2f}s"
+        )
 
         # 2) Add PDF bytes as LAST field
         form_data.add_field(
@@ -258,6 +264,7 @@ async def uploadsummarytotask(headers, filename, file_bytes, taskid, session, ca
         )
         body = {"FileName": filename}
         async with semaphore, throttle:
+            presign_start = time.perf_counter()
             async with session.post(url, json=body, headers=headers) as response:
                 if response.status != 201:
                     logging.info(
@@ -267,6 +274,10 @@ async def uploadsummarytotask(headers, filename, file_bytes, taskid, session, ca
 
                 payload = await response.json()
                 form_data, bucket_url = await amazondatatask(payload)
+            presign_elapsed = time.perf_counter() - presign_start
+        logging.info(
+            f"[presign task] task={taskid} file='{filename}' took {presign_elapsed:.2f}s"
+        )
 
         # 3) Add PDF bytes LAST
         form_data.add_field(

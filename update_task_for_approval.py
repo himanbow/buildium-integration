@@ -5,6 +5,7 @@ import signal
 from io import BytesIO
 import logging
 import json
+import time
 from datetime import datetime, UTC
 from tempfile import NamedTemporaryFile
 from typing import Optional
@@ -161,6 +162,7 @@ async def _upload_file_for_history(
 
         url_presign = f"{BASE_API}/{TASKS_RESOURCE}/{task_id}/history/{history_id}/files/uploadrequests"
         async with semaphore, throttle:
+            presign_start = time.perf_counter()
             async with session.post(url_presign, json={"FileName": filename}, headers=headers) as r_pre:
                 pre_text = await r_pre.text()
                 if r_pre.status != 201:
@@ -171,6 +173,7 @@ async def _upload_file_for_history(
                 except Exception as e:
                     logging.error(f"[presign] JSON parse error: {e} body={pre_text[:500]}")
                     return False
+            presign_elapsed = time.perf_counter() - presign_start
 
         form = pre.get("FormData") or {}
         bucket_url = pre.get("BucketUrl")
@@ -183,7 +186,9 @@ async def _upload_file_for_history(
         file_ct   = form.get("Content-Type", content_type)
         file_name = form.get("X-Amz-Meta-Buildium-File-Name", filename)
 
-        logging.info(f"[presign] ok Key={form.get('Key')} CT={file_ct} BuildiumName='{file_name}'")
+        logging.info(
+            f"[presign] ok Key={form.get('Key')} CT={file_ct} BuildiumName='{file_name}' took {presign_elapsed:.2f}s"
+        )
 
         ordered_keys = [
             "Key", "ACL", "Policy", "Content-Type", "Content-Disposition",
