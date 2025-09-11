@@ -26,11 +26,18 @@ if not logging.getLogger().handlers:
 BASE_API = "https://api.buildium.com/v1"
 TODO_RESOURCE = "tasks/todorequests"
 TASKS_RESOURCE = "tasks"
-
+HTTP_TIMEOUT = aiohttp.ClientTimeout(
+    total=120,        # whole request
+    connect=15,       # DNS + TCP connect
+    sock_connect=15,  # TCP handshake
+    sock_read=90,     # server processing / body read
+)
 
 # -----------------------------------------------------------------------------
 # Helpers
 # -----------------------------------------------------------------------------
+
+
 def _flatten_rows_from_summary(increase_summary: dict) -> list[dict]:
     rows = []
     for b_id, data in (increase_summary or {}).items():
@@ -347,7 +354,7 @@ async def update_task(
                 '"Increase Notices" with the task category set to "System Tasks".'
             )
 
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(timeout=HTTP_TIMEOUT) as session:
             # 1) Create/Update task history message (todorequests)
             ok_put = await _put_task_message(session, task_id, headers, title, assigned_to_user_id, taskcatid, msg)
             if not ok_put:
