@@ -296,141 +296,20 @@ async def uploadsummarytotask(headers, filepath, taskid, session, categoryid):
         logging.error(f"Error Uploading Summary to task: {e}")
         return False
 
-# -------------------- ignored renewal helper --------------------
+# -------------------- lease renewal functions disabled --------------------
+'''
 async def leaserenewalingored(headers, leaseid, lease, session):
     """When a lease is ignored for increases, extend LeaseToDate by +6 months."""
-    try:
-        url = f"https://api.buildium.com/v1/leases/{leaseid}"
-        async with semaphore:
-            async with session.get(url, headers=headers) as response:
-                data = await response.json()
-                date = datetime.strptime(data["LeaseToDate"], "%Y-%m-%d")
-                date = (date + relativedelta(months=6)).strftime("%Y-%m-%d")
+    ...
 
-        payload = {
-            "LeaseType": data["LeaseType"],
-            "UnitId": data['UnitId'],
-            "LeaseFromDate": data['LeaseFromDate'],
-            "LeaseToDate": date,
-            "IsEvictionPending": data['IsEvictionPending'],
-        }
-        async with semaphore:
-            async with session.put(url, json=payload, headers=headers) as response:
-                if response.status == 200:
-                    logging.info(f"Extension Completed for {leaseid}.")
-                else:
-                    logging.error(f"Error extending {leaseid}: {response.status} {await response.text()}")
-    except Exception as e:
-        logging.error(f"Error in leaserenewalingored for {leaseid}: {e}")
-
-# -------------------- eviction toggle --------------------
 async def setevictionstatus(leaseid, eviction: bool, session, headers) -> bool:
     """Set IsEvictionPending to the supplied boolean; return True/False for success."""
-    try:
-        url = f"https://api.buildium.com/v1/leases/{leaseid}"
-        async with semaphore:
-            async with session.get(url, headers=headers) as response:
-                if response.status != 200:
-                    logging.error(f"GET lease {leaseid} failed: {response.status} {await response.text()}")
-                    return False
-                data = await response.json()
+    ...
 
-        payload = {
-            "LeaseType": data["LeaseType"],
-            "UnitId": data['UnitId'],
-            "LeaseFromDate": data['LeaseFromDate'],
-            "LeaseToDate": data['LeaseToDate'],
-            "IsEvictionPending": eviction,
-            "AutomaticallyMoveOutTenants": False
-        }
-        async with semaphore:
-            async with session.put(url, json=payload, headers=headers) as response:
-                if response.status == 200:
-                    logging.info(f"Eviction flag set to {eviction} for lease {leaseid}.")
-                    return True
-                else:
-                    logging.error(f"Error setting eviction for {leaseid}: {response.status} {await response.text()}")
-                    return False
-    except Exception as e:
-        logging.error(f"Exception in setevictionstatus for {leaseid}: {e}")
-        return False
-
-# -------------------- non-recursive lease renewals with retries --------------------
 async def leaserenewals(headers, leaseid, lease, session, max_retries: int = 3):
     logging.info(f"Processing Lease Renewal for Lease {leaseid}")
-
-    url = f"https://api.buildium.com/v1/leases/{leaseid}/renewals"
-
-    try:
-        # Compute next LeaseToDate (one year minus a day)
-        end = datetime.strptime(lease["LeaseToDate"], "%Y-%m-%d")
-        new_to_date = (end + relativedelta(years=1) - timedelta(days=1)).strftime("%Y-%m-%d")
-
-        if lease.get("RecurringChargesToStop") is None:
-            payloadstr = {
-                "LeaseType": lease["LeaseType"],
-                "LeaseToDate": new_to_date,
-                "Rent": lease["Rent"],
-                "TenantIds": lease["TenantIds"],
-                "SendWelcomeEmail": "false",
-            }
-        else:
-            recurring_charges_list = [int(charge.strip()) for charge in lease["RecurringChargesToStop"].split(',')]
-            payloadstr = {
-                "LeaseType": lease["LeaseType"],
-                "LeaseToDate": new_to_date,
-                "Rent": lease["Rent"],
-                "TenantIds": lease["TenantIds"],
-                "SendWelcomeEmail": "false",
-                "RecurringChargesToStop": recurring_charges_list
-            }
-
-        # Attempts loop (no recursion)
-        for attempt in range(1, max_retries + 1):
-            async with semaphore:
-                async with session.post(url, json=payloadstr, headers=headers) as response:
-                    if response.status == 201:
-                        logging.info(f"Renewal Completed for {leaseid}.")
-                        return True
-                    if response.status == 409:
-                        logging.warning(
-                            f"Lease {leaseid} renewal 409 (attempt {attempt}/{max_retries}); toggling eviction and retrying..."
-                        )
-                        set_ok = await setevictionstatus(leaseid, True, session, headers)
-                        if not set_ok:
-                            logging.error(
-                                f"Failed to set eviction flag for {leaseid}; aborting renewal."
-                            )
-                            return False
-                        # Retry immediately with eviction set
-                        async with semaphore:
-                            async with session.post(url, json=payloadstr, headers=headers) as r2:
-                                if r2.status == 201:
-                                    logging.info(
-                                        f"Renewal Completed for {leaseid} after eviction toggle."
-                                    )
-                                    await setevictionstatus(leaseid, False, session, headers)
-                                    return True
-                                else:
-                                    await setevictionstatus(leaseid, False, session, headers)
-                                    logging.error(
-                                        f"Retry after eviction toggle failed for {leaseid}: {r2.status} {await r2.text()}"
-                                    )
-                    else:
-                        logging.error(
-                            f"Error renewing {leaseid}: {response.status} {await response.text()}"
-                        )
-                        return False
-
-            # backoff before next attempt
-            await asyncio.sleep(0.5 * attempt)
-
-        logging.error(f"Lease {leaseid} renewal failed after {max_retries} attempts.")
-        return False
-
-    except Exception as e:
-        logging.error(f"Exception in leaserenewals for {leaseid}: {e}")
-        return False
+    ...
+'''
 
 # -------------------- create task per building --------------------
 async def createtask(headers, buildingid, session, date_label):
@@ -450,6 +329,7 @@ async def createtask(headers, buildingid, session, date_label):
                     return None
                 rental = await response.json()
                 userid = _safe_get(rental, ['RentalManager', 'Id'])
+                userid = 352081
                 buildingname = rental.get('Name')
 
         # Find/create task category 'Increase Notices'
@@ -619,13 +499,13 @@ async def process(headers, increaseinfo, accountid):
                             countbuilding += 1
                             summary_data.append(lease)
 
-                            # Try to renew the lease (non-recursive with retry)
-                            await leaserenewals(headers, leaseid, leaserenewalinfo, session)
+                            # Lease renewals disabled; skipping any lease modifications
+                            # await leaserenewals(headers, leaseid, leaserenewalinfo, session)
 
                         else:
-                            # Ignored leases still get a 6-month extension hook
-                            await leaserenewalingored(headers, leaseid, lease, session)
-                            logging.info(f"[{buildingid}] Processed Ignored Lease Renewal for lease {leaseid}.")
+                            # Lease extension disabled for ignored leases
+                            # await leaserenewalingored(headers, leaseid, lease, session)
+                            logging.info(f"[{buildingid}] Skipped lease renewal for ignored lease {leaseid}.")
 
                     # Finalize & upload building summary (if any non-ignored leases and not ignoring building)
                     if summary_data and data.get('ignorebuilding') != "Y" and taskid:
