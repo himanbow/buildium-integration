@@ -10,7 +10,7 @@ from tempfile import NamedTemporaryFile
 from typing import Optional
 from pathlib import Path
 
-from rate_limiter import semaphore
+from rate_limiter import semaphore, throttle
 
 from build_prelim_increase_report import build_increase_report_pdf
 
@@ -100,7 +100,7 @@ async def _put_task_message(
         "Message": msg,
         "Date": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
     }
-    async with semaphore:
+    async with semaphore, throttle:
         async with session.put(url_task, json=payload, headers=headers) as r:
             body = await r.text()
             if r.status == 200:
@@ -116,7 +116,7 @@ async def _get_latest_history_id(
     # History is under /v1/tasks
     url_hist = f"{BASE_API}/{TASKS_RESOURCE}/{task_id}/history"
     logging.info(f"Fetching latest task history id for task_id={task_id} ({url_hist})")
-    async with semaphore:
+    async with semaphore, throttle:
         async with session.get(url_hist, headers=headers) as r_hist:
             body = await r_hist.text()
             if r_hist.status != 200:
@@ -160,7 +160,7 @@ async def _upload_file_for_history(
         logging.info(f"[presign] start filename='{filename}', size={len(file_bytes)} bytes")
 
         url_presign = f"{BASE_API}/{TASKS_RESOURCE}/{task_id}/history/{history_id}/files/uploadrequests"
-        async with semaphore:
+        async with semaphore, throttle:
             async with session.post(url_presign, json={"FileName": filename}, headers=headers) as r_pre:
                 pre_text = await r_pre.text()
                 if r_pre.status != 201:
@@ -209,7 +209,7 @@ async def _upload_file_for_history(
         form_data.add_field("file", file_bytes, filename=file_name, content_type=file_ct)
 
         logging.info(f"[upload] POST {bucket_url}")
-        async with semaphore:
+        async with semaphore, throttle:
             async with session.post(bucket_url, data=form_data) as resp:
                 body = await resp.text()
                 if resp.status in (204, 200, 201):
@@ -244,7 +244,7 @@ async def _wait_for_files(
 
     logging.info(f"Polling for files to appear on history {history_id}: {sorted(want)}")
     while time.monotonic() < deadline:
-        async with semaphore:
+        async with semaphore, throttle:
             async with session.get(url, headers=headers) as r:
                 body = await r.text()
                 if r.status == 200:

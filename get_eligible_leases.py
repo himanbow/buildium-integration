@@ -5,7 +5,7 @@ from collections import defaultdict
 import logging
 import re
 
-from rate_limiter import semaphore
+from rate_limiter import semaphore, throttle
 
 building_notes_cache = {}
 
@@ -14,7 +14,7 @@ async def fetch_data(session, url, headers, params=None):
     logging.info("Fetching Data From Buildium")
     try:
         # Limit concurrent requests using semaphore
-        async with semaphore:
+        async with semaphore, throttle:
             while True:
                 async with session.get(url, headers=headers, params=params) as response:
                     status_code = response.status

@@ -10,7 +10,7 @@ import aiofiles.os
 from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
 
-from rate_limiter import semaphore
+from rate_limiter import semaphore, throttle
 
 # -------------------- small helpers --------------------
 def _is_ignored(v) -> bool:
@@ -31,7 +31,7 @@ async def fetch_data(session, url, headers, method: str = "GET"):
     """Fetch data asynchronously with a small 429 backoff and a semaphore."""
     logging.info("Fetching Data From Buildium")
     try:
-        async with semaphore:
+        async with semaphore, throttle:
             while True:
                 async with session.request(method, url, headers=headers) as response:
                     status_code = response.status
@@ -60,7 +60,7 @@ async def category(headers, session, date_label: str):
     """Find or create a Files Category named 'Increases {date_label}' and return its Id."""
     url = "https://api.buildium.com/v1/files/categories"
     params = {'limit': 1000}
-    async with semaphore:
+    async with semaphore, throttle:
         async with session.get(url, headers=headers, params=params) as response:
             if response.status != 200:
                 logging.error(f"Failed to fetch file categories: {response.status} {await response.text()}")
@@ -75,7 +75,7 @@ async def category(headers, session, date_label: str):
 
             if category_id is None:
                 payload = {'Name': f'Increases {date_label}'}
-                async with semaphore:
+                async with semaphore, throttle:
                     async with session.post(url, headers=headers, json=payload) as r2:
                         if r2.status != 201:
                             logging.error(f"Failed creating file category: {r2.status} {await r2.text()}")
@@ -189,7 +189,7 @@ async def uploadN1filestolease(headers, filename, file_bytes, leaseid, session, 
             "Title": filename,
             "CategoryId": categoryid,
         }
-        async with semaphore:
+        async with semaphore, throttle:
             async with session.post(url, json=body, headers=headers) as response:
                 if response.status != 201:
                     logging.info(
@@ -206,7 +206,7 @@ async def uploadN1filestolease(headers, filename, file_bytes, leaseid, session, 
         )
 
         # 3) Upload to S3
-        async with semaphore:
+        async with semaphore, throttle:
             async with session.post(bucket_url, data=form_data) as upload_response:
                 if upload_response.status == 204:
                     logging.info(f"Upload of Notice for {leaseid} successful.")
@@ -231,7 +231,7 @@ async def uploadsummarytotask(headers, filename, file_bytes, taskid, session, ca
     try:
         # 1) Get latest task history id (newest first)
         urltaskhistory = f"https://api.buildium.com/v1/tasks/{taskid}/history"
-        async with semaphore:
+        async with semaphore, throttle:
             async with session.get(urltaskhistory, headers=headers) as response:
                 if response.status != 200:
                     logging.info(
@@ -257,7 +257,7 @@ async def uploadsummarytotask(headers, filename, file_bytes, taskid, session, ca
             f"https://api.buildium.com/v1/tasks/{taskid}/history/{taskhistoryid}/files/uploadrequests"
         )
         body = {"FileName": filename}
-        async with semaphore:
+        async with semaphore, throttle:
             async with session.post(url, json=body, headers=headers) as response:
                 if response.status != 201:
                     logging.info(
@@ -274,7 +274,7 @@ async def uploadsummarytotask(headers, filename, file_bytes, taskid, session, ca
         )
 
         # 4) Upload to S3
-        async with semaphore:
+        async with semaphore, throttle:
             async with session.post(bucket_url, data=form_data) as upload_response:
                 if upload_response.status == 204:
                     logging.info(f"Upload successful for Task {taskid}.")
@@ -315,7 +315,7 @@ async def createtask(headers, buildingid, session, date_label):
 
     try:
         # Get rental (for AssignedToUserId and Name)
-        async with semaphore:
+        async with semaphore, throttle:
             async with session.get(url_rental, headers=headers) as response:
                 if response.status != 200:
                     logging.error(f"Failed to fetch building data. Status: {response.status}")
@@ -326,7 +326,7 @@ async def createtask(headers, buildingid, session, date_label):
                 buildingname = rental.get('Name')
 
         # Find/create task category 'Increase Notices'
-        async with semaphore:
+        async with semaphore, throttle:
             async with session.get(url_cat, params=params, headers=headers) as response:
                 if response.status != 200:
                     logging.error(f"Failed to fetch task categories. Status: {response.status}")
@@ -339,7 +339,7 @@ async def createtask(headers, buildingid, session, date_label):
                         break
                 if category_id is None:
                     payload = {'Name': 'Increase Notices'}
-                    async with semaphore:
+                    async with semaphore, throttle:
                         async with session.post(url_cat, headers=headers, json=payload) as r2:
                             if r2.status != 201:
                                 logging.error(f"Failed to create task category. Status: {r2.status}")
@@ -357,7 +357,7 @@ async def createtask(headers, buildingid, session, date_label):
             'Priority': "High",
             'DueDate': datetime.now().strftime("%Y-%m-%d")
         }
-        async with semaphore:
+        async with semaphore, throttle:
             async with session.post(url_task, json=payloadtask, headers=headers) as response:
                 if response.status != 201:
                     logging.error(f"Failed to create task. Status: {response.status} {await response.text()}")

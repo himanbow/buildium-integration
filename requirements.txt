@@ -1,5 +1,6 @@
 quart
 aiohttp
+aiolimiter
 PyPDF2
 reportlab
 google-cloud-secret-manager

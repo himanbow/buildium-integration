@@ -6,7 +6,7 @@ import logging
 import aiohttp
 from aiohttp import ClientTimeout
 
-from rate_limiter import semaphore
+from rate_limiter import semaphore, throttle
 
 def _best_name(meta: dict) -> str:
     """Return the best-available filename from assorted schemas."""
@@ -33,7 +33,7 @@ async def decode(headers, task_data, client_secret):
         try:
             # 1) Get history (newest first)
             url_hist = f"https://api.buildium.com/v1/tasks/{task_id}/history"
-            async with semaphore:
+            async with semaphore, throttle:
                 async with session.get(url_hist, headers=headers) as resp:
                     if resp.status != 200:
                         logging.error(f"history GET failed: {resp.status} {await resp.text()}")
@@ -53,7 +53,7 @@ async def decode(headers, task_data, client_secret):
             for h in history:
                 hid = h.get("Id")
                 files_url = f"https://api.buildium.com/v1/tasks/{task_id}/history/{hid}/files"
-                async with semaphore:
+                async with semaphore, throttle:
                     async with session.get(files_url, headers=headers) as rf:
                         if rf.status != 200:
                             logging.warning(f"files GET {hid} failed: {rf.status} {await rf.text()}")
@@ -78,7 +78,7 @@ async def decode(headers, task_data, client_secret):
                     if not fid:
                         continue
                     meta_url = f"https://api.buildium.com/v1/files/{fid}"
-                    async with semaphore:
+                    async with semaphore, throttle:
                         async with session.get(meta_url, headers=headers) as mf:
                             if mf.status != 200:
                                 continue
@@ -102,7 +102,7 @@ async def decode(headers, task_data, client_secret):
 
             # 3) Get download URL
             url_dl_req = f"https://api.buildium.com/v1/tasks/{task_id}/history/{chosen_hid}/files/{chosen_fid}/downloadrequest"
-            async with semaphore:
+            async with semaphore, throttle:
                 async with session.post(url_dl_req, headers=headers, json={}) as dr:
                     if dr.status not in (200, 201):
                         logging.error(f"downloadrequest POST failed: {dr.status} {await dr.text()}")
@@ -114,7 +114,7 @@ async def decode(headers, task_data, client_secret):
                         return None
 
             # 4) Download bytes
-            async with semaphore:
+            async with semaphore, throttle:
                 async with session.get(download_url) as df:
                     if df.status != 200:
                         logging.error(f"download GET failed: {df.status} {await df.text()}")
