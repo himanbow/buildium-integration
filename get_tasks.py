@@ -1,6 +1,6 @@
 import aiohttp
 
-from rate_limiter import semaphore
+from rate_limiter import semaphore, throttle
 
 
 async def get_task_data(task_id, headers):
@@ -13,7 +13,7 @@ async def get_task_data(task_id, headers):
 
     try:
         async with aiohttp.ClientSession() as session:
-            async with semaphore:
+            async with semaphore, throttle:
                 async with session.get(url, headers=headers) as response:
                     if response.status == 200:
                         print(f"Retrieved task {task_id}: {response.status}")
