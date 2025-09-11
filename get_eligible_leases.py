@@ -255,23 +255,32 @@ async def process_single_lease(session, lease, headers, increase_effective_date,
         lease_end_date = datetime.strptime(lease['LeaseToDate'], '%Y-%m-%d')
 
         if lease_end_date <= increase_effective_date - timedelta(days=1) and lease['AccountDetails']['Rent'] > 0:
-            notes = await get_lease_notes(session, lease['Id'], headers)
-            logging.info(f"Processing Notes for Lease Id: {lease['Id']}")
             calculationpercentage = guideline_increase
-            lease_agi_info, Noincrease = parse_lease_agi_notes(notes)
-            try:
-                if lease_agi_info:
-                    total_increase_percentage, calculationpercentage = calculate_total_increase(building_agi_info, guideline_increase, lease_agi_info, increase_effective_date)
-                    agi = "Yes"
-                    if any(agi_info['approval_status'] == "Not Approved" for agi_info in building_agi_info):
-                        AGItype = "Not Approved"
+            lease_agi_info = []
+            Noincrease = False
+
+            # Only process lease notes if the building has AGI information
+            if building_agi_info:
+                notes = await get_lease_notes(session, lease['Id'], headers)
+                logging.info(f"Processing Notes for Lease Id: {lease['Id']}")
+                lease_agi_info, Noincrease = parse_lease_agi_notes(notes)
+                try:
+                    if lease_agi_info:
+                        total_increase_percentage, calculationpercentage = calculate_total_increase(building_agi_info, guideline_increase, lease_agi_info, increase_effective_date)
+                        agi = "Yes"
+                        if any(agi_info['approval_status'] == "Not Approved" for agi_info in building_agi_info):
+                            AGItype = "Not Approved"
+                        else:
+                            AGItype = "Approved"
                     else:
-                        AGItype = "Approved"
-                else:
-                    total_increase_percentage = guideline_increase
-                    agi = None
-            except Exception as e:
-                logging.error(f"Error processing AGI: {e}")
+                        total_increase_percentage = guideline_increase
+                        agi = None
+                except Exception as e:
+                    logging.error(f"Error processing AGI: {e}")
+            else:
+                total_increase_percentage = guideline_increase
+                agi = None
+
             logging.info(f"Processing Unit for Lease Id: {lease['Id']}")
             unit_details = await get_unit_details(session, lease['UnitId'], headers)
 
@@ -281,7 +290,7 @@ async def process_single_lease(session, lease, headers, increase_effective_date,
                 logging.error(f"Error processing marketrent {e}")
             recurringchargesinfo = await getrecurringcharges(lease['Id'], session, headers)
             recurringcharges, rent = await processrecurringcharges(recurringchargesinfo)
-            
+
 
             try:
                 if Noincrease is True:
@@ -301,7 +310,7 @@ async def process_single_lease(session, lease, headers, increase_effective_date,
                     except Exception as e:
                         logging.error(f"Error processing moveout data {e}")
                 else:
-                    eligible = True       
+                    eligible = True
                 tenant_namesdata = []
                 tenantidslist = []
             except Exception as e:
