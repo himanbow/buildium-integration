@@ -212,11 +212,57 @@ async def _upload_file_for_history(
         async with semaphore, throttle:
             async with session.post(bucket_url, data=form_data) as resp:
                 body = await resp.text()
-                if resp.status in (204, 200, 201):
-                    logging.info(f"[upload] OK {resp.status} '{file_name}' body={body[:200]}")
-                    return True
-                logging.error(f"[upload] FAIL {resp.status} '{file_name}' body={body[:500]}")
+                status = resp.status
+
+        if status in (204, 200, 201):
+            logging.info(f"[upload] OK {status} '{file_name}' body={body[:200]}")
+            return True
+        if status == 403 and "Invalid according to Policy: Policy expired" in body:
+            logging.warning("[upload] Policy expired; refreshing presign and retrying once.")
+            async with semaphore, throttle:
+                async with session.post(url_presign, json={"FileName": filename}, headers=headers) as r_pre2:
+                    pre_text2 = await r_pre2.text()
+                    if r_pre2.status != 201:
+                        logging.error(f"[presign-retry] FAIL {r_pre2.status} {pre_text2[:500]}")
+                        return False
+                    try:
+                        pre2 = json.loads(pre_text2)
+                    except Exception as e:
+                        logging.error(f"[presign-retry] JSON parse error: {e} body={pre_text2[:500]}")
+                        return False
+
+            form2 = pre2.get("FormData") or {}
+            bucket_url2 = pre2.get("BucketUrl")
+            if not bucket_url2 or not form2:
+                logging.error("[presign-retry] Missing BucketUrl or FormData.")
                 return False
+
+            form2 = {str(k): ("" if v is None else str(v)) for k, v in form2.items()}
+            file_ct = form2.get("Content-Type", content_type)
+            file_name = form2.get("X-Amz-Meta-Buildium-File-Name", filename)
+
+            form_data2 = aiohttp.FormData(quote_fields=False)
+            for k in ordered_keys:
+                if k in form2:
+                    form_data2.add_field(k, form2[k])
+            for k, v in form2.items():
+                if k not in ordered_keys:
+                    form_data2.add_field(k, v)
+
+            form_data2.add_field("file", file_bytes, filename=file_name, content_type=file_ct)
+
+            logging.info(f"[upload-retry] POST {bucket_url2}")
+            async with semaphore, throttle:
+                async with session.post(bucket_url2, data=form_data2) as resp2:
+                    body2 = await resp2.text()
+                    if resp2.status in (204, 200, 201):
+                        logging.info(f"[upload-retry] OK {resp2.status} '{file_name}' body={body2[:200]}")
+                        return True
+                    logging.error(f"[upload-retry] FAIL {resp2.status} '{file_name}' body={body2[:500]}")
+                    return False
+
+        logging.error(f"[upload] FAIL {status} '{file_name}' body={body[:500]}")
+        return False
 
     except asyncio.CancelledError:
         logging.error(f"[upload] Cancelled while uploading '{filename}' (shutdown in progress).")
