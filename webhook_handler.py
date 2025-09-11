@@ -7,6 +7,8 @@ import task_processor
 from google.cloud import secretmanager
 from google.cloud import firestore
 import logging
+import asyncio
+from functools import lru_cache
 
 app = Quart(__name__)
 
@@ -19,6 +21,7 @@ logging.getLogger('quart.serving').setLevel(logging.DEBUG)
 secret_client = secretmanager.SecretManagerServiceClient()
 db = firestore.Client(project="buildium-integration-v1")
 
+@lru_cache(maxsize=128)
 def get_secret(secret_name):
     """Retrieve the secret key from Google Secret Manager."""
     project_id = "buildium-integration-v1"
@@ -27,13 +30,15 @@ def get_secret(secret_name):
     secret = response.payload.data.decode("UTF-8")
     return secret
 
+
+@lru_cache(maxsize=128)
 def get_account_info(account_id):
     """Retrieve account information from Firestore based on AccountId."""
     try:
         logging.info(f"Fetching account info for Account ID: {account_id}")
         doc_ref = db.collection('buildium_accounts').document(str(account_id))
         doc = doc_ref.get()  # Fetch the document
-        
+
         if doc.exists:
             logging.info(f"Account info found for Account ID: {account_id}")
             return doc.to_dict()
@@ -42,7 +47,9 @@ def get_account_info(account_id):
             return None
     except Exception as e:
         if "PERMISSION_DENIED" in str(e):
-            logging.error(f"Permission denied when fetching account info for Account ID {account_id}: {e}")
+            logging.error(
+                f"Permission denied when fetching account info for Account ID {account_id}: {e}"
+            )
         else:
             logging.error(f"Error fetching account info for Account ID {account_id}: {e}")
         return None
@@ -106,13 +113,15 @@ async def handle_webhook():
         account_id = payload.get('AccountId')
         logging.info(f"Account ID: {account_id}")
 
-        account_info = get_account_info(account_id)
+        # Run Firestore lookup in a thread to avoid blocking the event loop
+        account_info = await asyncio.to_thread(get_account_info, account_id)
         if not account_info:
             logging.error("Account not found")
             return jsonify({'error': 'Account not found'}), 400
 
         secret_name = account_info['secret_name']
-        secret_key = get_secret(secret_name)
+        # Secret Manager access can also block, so run it in a thread
+        secret_key = await asyncio.to_thread(get_secret, secret_name)
 
         if not verify_signature(request_body, signature, timestamp, secret_key):
             logging.error("Invalid signature")
