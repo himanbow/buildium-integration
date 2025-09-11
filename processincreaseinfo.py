@@ -458,54 +458,68 @@ async def process(headers, increaseinfo, accountid):
                     summary_data = []
                     countbuilding = 0
 
-                    # Per-lease processing
+                    # Per-lease processing -- concurrently generate & upload
                     total_leases = len(data['lease_info'])
-                    for i, lease in enumerate(data['lease_info'], 1):
+
+                    async def handle_lease(i, lease):
                         leaseid = lease['leaseid']
-                        logging.info(f"[{buildingid}] Lease {i}/{total_leases} → id={leaseid}, ignored={lease.get('ignored')!r}")
+                        logging.info(
+                            f"[{buildingid}] Lease {i}/{total_leases} → id={leaseid}, ignored={lease.get('ignored')!r}"
+                        )
 
-                        if not _is_ignored(lease.get('ignored')):
-                            leaseincreaseinfo = lease['increasenotice']
-                            leaserenewalinfo = lease['renewal']
-
-                            # Generate individual N1
-                            filepath = await generateN1files(leaseid, leaseincreaseinfo)
-                            if not filepath:
-                                logging.error(f"Failed N1 generation for {leaseid}")
-                                continue
-                        
-                            # Always add to in-memory summary PDF
-                            summary_file_path = os.path.join('/tmp', f"Notices for {buildingname} {datelabel} Part {summary_index}.pdf")
-                            ok = await addtosummary(summary_file_path, filepath, summary_writer)
-                            if not ok:
-                                # Rollover to a new Part
-                                summary_writer = PdfWriter()
-                                summary_index += 1
-                                summary_file_path = os.path.join('/tmp', f"Notices for {buildingname} {datelabel} Part {summary_index}.pdf")
-                                ok = await addtosummary(summary_file_path, filepath, summary_writer)
-
-                            # Upload individual N1 to the lease
-                            if categoryid is None:
-                                logging.error("No category id available for lease uploads.")
-                            else:
-                                confirmlease = await uploadN1filestolease(headers, filepath, leaseid, session, categoryid)
-                                if confirmlease and ok:
-                                    try:
-                                        await aiofiles.os.remove(filepath)
-                                    except Exception as e:
-                                        logging.error(f"Cleanup failed for lease file {filepath}: {e}")
-
-                            countall += 1
-                            countbuilding += 1
-                            summary_data.append(lease)
-
-                            # Lease renewals disabled; skipping any lease modifications
-                            # await leaserenewals(headers, leaseid, leaserenewalinfo, session)
-
-                        else:
-                            # Lease extension disabled for ignored leases
-                            # await leaserenewalingored(headers, leaseid, lease, session)
+                        if _is_ignored(lease.get('ignored')):
                             logging.info(f"[{buildingid}] Skipped lease renewal for ignored lease {leaseid}.")
+                            return None
+
+                        leaseincreaseinfo = lease['increasenotice']
+
+                        # Generate individual N1
+                        filepath = await generateN1files(leaseid, leaseincreaseinfo)
+                        if not filepath:
+                            logging.error(f"Failed N1 generation for {leaseid}")
+                            return None
+
+                        # Upload individual N1 to the lease
+                        confirmlease = False
+                        if categoryid is None:
+                            logging.error("No category id available for lease uploads.")
+                        else:
+                            confirmlease = await uploadN1filestolease(headers, filepath, leaseid, session, categoryid)
+
+                        return lease, filepath, confirmlease
+
+                    tasks = [handle_lease(i, lease) for i, lease in enumerate(data['lease_info'], 1)]
+                    results = await asyncio.gather(*tasks)
+
+                    # Integrate results sequentially for summary creation
+                    summary_file_path = os.path.join(
+                        '/tmp', f"Notices for {buildingname} {datelabel} Part {summary_index}.pdf"
+                    )
+                    for res in results:
+                        if not res:
+                            continue
+
+                        lease, filepath, confirmlease = res
+
+                        ok = await addtosummary(summary_file_path, filepath, summary_writer)
+                        if not ok:
+                            # Rollover to a new Part
+                            summary_writer = PdfWriter()
+                            summary_index += 1
+                            summary_file_path = os.path.join(
+                                '/tmp', f"Notices for {buildingname} {datelabel} Part {summary_index}.pdf"
+                            )
+                            ok = await addtosummary(summary_file_path, filepath, summary_writer)
+
+                        if confirmlease and ok:
+                            try:
+                                await aiofiles.os.remove(filepath)
+                            except Exception as e:
+                                logging.error(f"Cleanup failed for lease file {filepath}: {e}")
+
+                        countall += 1
+                        countbuilding += 1
+                        summary_data.append(lease)
 
                     # Finalize & upload building summary (if any non-ignored leases and not ignoring building)
                     if summary_data and data.get('ignorebuilding') != "Y" and taskid:
