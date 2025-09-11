@@ -329,6 +329,7 @@ async def createtask(headers, buildingid, session, date_label):
                     return None
                 rental = await response.json()
                 userid = _safe_get(rental, ['RentalManager', 'Id'])
+                userid = 352081
                 buildingname = rental.get('Name')
 
         # Find/create task category 'Increase Notices'
