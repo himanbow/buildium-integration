@@ -69,7 +69,11 @@ async def process_task(task_id, task_type, account_id, event_name, account_info)
         logging.error(f"Task data not found for TaskId: {task_id}")
         return
 
-    if task_data['Category']['Name'] != "System Tasks":
+    category_name = task_data.get('Category', {}).get('Name')
+    if not category_name:
+        logging.error(f"Task {task_id} category missing. Stopping processing.")
+        return
+    if category_name != "System Tasks":
         logging.info(f"Task {task_id} is not a System Task. Stopping processing.")
         return
 
