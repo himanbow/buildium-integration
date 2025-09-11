@@ -1,5 +1,7 @@
+import asyncio
 import aiohttp
 import os
+import signal
 from io import BytesIO
 import logging
 import json
@@ -7,7 +9,6 @@ from datetime import datetime, UTC
 from tempfile import NamedTemporaryFile
 from typing import Optional
 from pathlib import Path
-import signal
 
 from build_prelim_increase_report import build_increase_report_pdf
 
@@ -16,6 +17,25 @@ from build_prelim_increase_report import build_increase_report_pdf
 # -----------------------------------------------------------------------------
 if not logging.getLogger().handlers:
     logging.basicConfig(level=logging.INFO)
+
+
+def install_signal_logging():
+    """Log incoming SIGTERM/SIGINT so shutdown causes are obvious in logs."""
+    try:
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            loop.add_signal_handler(sig, lambda s=sig: logging.warning(f"Received {s.name}"))
+    except Exception:
+        # Not in main thread or not supported on this platform; ignore.
+        pass
+
+
+# Install signal logging at import time (best-effort).
+try:
+    install_signal_logging()
+except Exception:
+    pass
+
 
 # -----------------------------------------------------------------------------
 # API bases
@@ -34,11 +54,10 @@ HTTP_TIMEOUT = aiohttp.ClientTimeout(
     sock_read=90,     # server processing / body read
 )
 
+
 # -----------------------------------------------------------------------------
 # Helpers
 # -----------------------------------------------------------------------------
-
-
 def _flatten_rows_from_summary(increase_summary: dict) -> list[dict]:
     rows = []
     for b_id, data in (increase_summary or {}).items():
@@ -58,8 +77,15 @@ def _parse_iso(dt_str: Optional[str]) -> datetime:
         return datetime.min.replace(tzinfo=UTC)
 
 
-async def _put_task_message(session: aiohttp.ClientSession, task_id: int, headers: dict,
-                            title: str, assigned_to_user_id: int, taskcatid: int, msg: str) -> bool:
+async def _put_task_message(
+    session: aiohttp.ClientSession,
+    task_id: int,
+    headers: dict,
+    title: str,
+    assigned_to_user_id: int,
+    taskcatid: int,
+    msg: str,
+) -> bool:
     logging.info("Updating task message/title/assignee...")
     url_task = f"{BASE_API}/{TODO_RESOURCE}/{task_id}"
     payload = {
@@ -81,13 +107,14 @@ async def _put_task_message(session: aiohttp.ClientSession, task_id: int, header
         return False
 
 
-async def _get_latest_history_id(session: aiohttp.ClientSession, task_id: int, headers: dict) -> Optional[int]:
+async def _get_latest_history_id(
+    session: aiohttp.ClientSession, task_id: int, headers: dict
+) -> Optional[int]:
     # History is under /v1/tasks
     url_hist = f"{BASE_API}/{TASKS_RESOURCE}/{task_id}/history"
-    logging.info(f"History ID Def {task_id}, {url_hist}")
+    logging.info(f"Fetching latest task history id for task_id={task_id} ({url_hist})")
     async with session.get(url_hist, headers=headers) as r_hist:
         body = await r_hist.text()
-        logging.info(f"History ID Def {body}")
         if r_hist.status != 200:
             logging.error(f"History GET failed: {r_hist.status} {body[:500]}")
             return None
@@ -111,10 +138,15 @@ async def _get_latest_history_id(session: aiohttp.ClientSession, task_id: int, h
         return hid
 
 
-
-async def _upload_file_for_history(session: aiohttp.ClientSession, task_id: int, history_id: int,
-                                   headers: dict, filename: str, file_bytes: bytes,
-                                   content_type: str) -> bool:
+async def _upload_file_for_history(
+    session: aiohttp.ClientSession,
+    task_id: int,
+    history_id: int,
+    headers: dict,
+    filename: str,
+    file_bytes: bytes,
+    content_type: str,
+) -> bool:
     """
     1) Presign via Buildium: POST /v1/tasks/{taskId}/history/{historyId}/files/uploadrequests
     2) POST multipart/form-data to S3 BucketUrl with EXACT fields from FormData, file LAST
@@ -180,17 +212,26 @@ async def _upload_file_for_history(session: aiohttp.ClientSession, task_id: int,
             logging.error(f"[upload] FAIL {resp.status} '{file_name}' body={body[:500]}")
             return False
 
+    except asyncio.CancelledError:
+        logging.error(f"[upload] Cancelled while uploading '{filename}' (shutdown in progress).")
+        raise
     except Exception as e:
         logging.exception(f"[upload] Exception '{filename}': {e}")
         return False
 
 
-async def _wait_for_files(session: aiohttp.ClientSession, task_id: int, history_id: int, headers: dict,
-                          expected_names: list[str], timeout_s: int = 30) -> bool:
+async def _wait_for_files(
+    session: aiohttp.ClientSession,
+    task_id: int,
+    history_id: int,
+    headers: dict,
+    expected_names: list[str],
+    timeout_s: int = 30,
+) -> bool:
     """
     Optional: poll for attachments to appear on the history entry.
     """
-    import time, asyncio
+    import time
     url = f"{BASE_API}/{TASKS_RESOURCE}/{task_id}/history/{history_id}/files"
     deadline = time.monotonic() + timeout_s
     want = set([n.strip() for n in expected_names])
@@ -204,7 +245,7 @@ async def _wait_for_files(session: aiohttp.ClientSession, task_id: int, history_
                     items = json.loads(body) or []
                 except Exception:
                     items = []
-                names = { (i.get("FileName") or i.get("Title") or "").strip() for i in items }
+                names = {(i.get("FileName") or i.get("Title") or "").strip() for i in items}
                 if want.issubset(names):
                     logging.info("All attachments visible on history.")
                     return True
@@ -268,17 +309,31 @@ def split_pdf_bytes(pdf_bytes: bytes, max_bytes: int = 15 * 1024 * 1024) -> list
     return parts
 
 
-async def _do_post_put_flow(session, task_id, headers, part_names_and_bytes, json_filename, json_bytes):
-    # 2) Lock HISTORY
+# -----------------------------------------------------------------------------
+# Shielded post-PUT work (history fetch + uploads)
+# -----------------------------------------------------------------------------
+async def _do_post_put_flow(
+    session: aiohttp.ClientSession,
+    task_id: int,
+    headers: dict,
+    part_names_and_bytes: list[tuple[str, bytes]],
+    json_filename: str,
+    json_bytes: bytes,
+    poll_finalize: bool = False,
+) -> bool:
+    # 2) Lock the HISTORY ID *now* (tasks)
     history_id = await _get_latest_history_id(session, task_id, headers)
     logging.info("Starting Task History ID")
     if not history_id:
         logging.error("Could not find latest history entry to attach files.")
         return False
 
-    logging.info(f"About to upload {len(part_names_and_bytes)} PDF part(s): {[n for n,_ in part_names_and_bytes]} + {json_filename}")
+    logging.info(
+        f"About to upload {len(part_names_and_bytes)} PDF part(s): "
+        f"{[n for n, _ in part_names_and_bytes]} + {json_filename}"
+    )
 
-    # 3) Upload PDFs
+    # 3) Upload each PDF part (tasks)
     for part_filename, part_bytes in part_names_and_bytes:
         logging.info(f"Uploading PDF: {part_filename} ({len(part_bytes)} bytes)")
         ok_pdf = await _upload_file_for_history(
@@ -289,7 +344,7 @@ async def _do_post_put_flow(session, task_id, headers, part_names_and_bytes, jso
             logging.error(f"PDF upload failed for {part_filename}")
             return False
 
-    # 4) Upload JSON
+    # 4) Upload the JSON payload (tasks)
     logging.info(f"Uploading JSON: {json_filename} ({len(json_bytes)} bytes)")
     ok_json = await _upload_file_for_history(
         session, task_id, history_id, headers,
@@ -299,8 +354,14 @@ async def _do_post_put_flow(session, task_id, headers, part_names_and_bytes, jso
         logging.error("JSON upload failed.")
         return False
 
+    # 5) Optional: verify attachments appeared (Buildium finalize)
+    if poll_finalize:
+        expected = [name for name, _ in part_names_and_bytes] + [json_filename]
+        await _wait_for_files(session, task_id, history_id, headers, expected_names=expected, timeout_s=30)
+
     logging.info("Post-PUT uploads finished.")
     return True
+
 
 # -----------------------------------------------------------------------------
 # Main entry
@@ -394,10 +455,24 @@ async def update_task(
 
         async with aiohttp.ClientSession(timeout=HTTP_TIMEOUT) as session:
             # 1) Create/Update task history message (todorequests)
+            logging.info("Starting Task Update")
+            ok_put = await _put_task_message(session, task_id, headers, title, assigned_to_user_id, taskcatid, msg)
+            if not ok_put:
+                return False
+
+            # 2–4) Shield the rest of the flow so shutdowns can't silently cancel it
             try:
                 logging.info("Entering shielded post-PUT section...")
                 ok_all = await asyncio.shield(
-                    _do_post_put_flow(session, task_id, headers, part_names_and_bytes, json_filename, json_bytes)
+                    _do_post_put_flow(
+                        session=session,
+                        task_id=task_id,
+                        headers=headers,
+                        part_names_and_bytes=part_names_and_bytes,
+                        json_filename=json_filename,
+                        json_bytes=json_bytes,
+                        poll_finalize=poll_finalize,
+                    )
                 )
                 if not ok_all:
                     return False
@@ -405,44 +480,12 @@ async def update_task(
                 logging.error("update_task cancelled during post-PUT work (server shutdown or SIGTERM).")
                 raise
 
-            # # 2) Lock the HISTORY ID *now* (tasks)
-            # history_id = await _get_latest_history_id(session, task_id, headers)
-            # logging.info("Starting Task History ID")
-            # if not history_id:
-            #     logging.error("Could not find latest history entry to attach files.")
-            #     return False
-
-            # logging.info(f"About to upload {len(part_names_and_bytes)} PDF part(s): {[n for n,_ in part_names_and_bytes]} + {json_filename}")
-
-            # # 3) Upload each PDF part (tasks)
-            # for part_filename, part_bytes in part_names_and_bytes:
-            #     logging.info(f"Uploading PDF: {part_filename} ({len(part_bytes)} bytes)")
-            #     ok_pdf = await _upload_file_for_history(
-            #         session, task_id, history_id, headers,
-            #         part_filename, part_bytes, content_type="application/pdf"
-            #     )
-            #     if not ok_pdf:
-            #         logging.error(f"PDF upload failed for {part_filename}")
-            #         return False
-
-            # # 4) Upload the JSON payload (tasks)
-            # logging.info(f"Uploading JSON: {json_filename} ({len(json_bytes)} bytes)")
-            # ok_json = await _upload_file_for_history(
-            #     session, task_id, history_id, headers,
-            #     json_filename, json_bytes, content_type="application/json"
-            # )
-            # if not ok_json:
-            #     logging.error("JSON upload failed.")
-            #     return False
-
-            # # 5) Optional: verify attachments appeared (Buildium finalize)
-            # if poll_finalize:
-            #     expected = [name for name, _ in part_names_and_bytes] + [json_filename]
-            #     await _wait_for_files(session, task_id, history_id, headers, expected_names=expected, timeout_s=30)
-
             logging.info("Task update completed successfully.")
             return True
 
+    except asyncio.CancelledError:
+        logging.error("update_task was cancelled (likely app shutdown).")
+        raise
     except Exception as e:
         logging.exception(f"Error updating task: {e} for increase notices")
         return False
