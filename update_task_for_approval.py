@@ -7,6 +7,7 @@ from datetime import datetime, UTC
 from tempfile import NamedTemporaryFile
 from typing import Optional
 from pathlib import Path
+import signal
 
 from build_prelim_increase_report import build_increase_report_pdf
 
@@ -108,6 +109,7 @@ async def _get_latest_history_id(session: aiohttp.ClientSession, task_id: int, h
         hid = hist[0].get("Id")
         logging.info(f"Locked history_id={hid}")
         return hid
+
 
 
 async def _upload_file_for_history(session: aiohttp.ClientSession, task_id: int, history_id: int,
@@ -266,6 +268,40 @@ def split_pdf_bytes(pdf_bytes: bytes, max_bytes: int = 15 * 1024 * 1024) -> list
     return parts
 
 
+async def _do_post_put_flow(session, task_id, headers, part_names_and_bytes, json_filename, json_bytes):
+    # 2) Lock HISTORY
+    history_id = await _get_latest_history_id(session, task_id, headers)
+    logging.info("Starting Task History ID")
+    if not history_id:
+        logging.error("Could not find latest history entry to attach files.")
+        return False
+
+    logging.info(f"About to upload {len(part_names_and_bytes)} PDF part(s): {[n for n,_ in part_names_and_bytes]} + {json_filename}")
+
+    # 3) Upload PDFs
+    for part_filename, part_bytes in part_names_and_bytes:
+        logging.info(f"Uploading PDF: {part_filename} ({len(part_bytes)} bytes)")
+        ok_pdf = await _upload_file_for_history(
+            session, task_id, history_id, headers,
+            part_filename, part_bytes, content_type="application/pdf"
+        )
+        if not ok_pdf:
+            logging.error(f"PDF upload failed for {part_filename}")
+            return False
+
+    # 4) Upload JSON
+    logging.info(f"Uploading JSON: {json_filename} ({len(json_bytes)} bytes)")
+    ok_json = await _upload_file_for_history(
+        session, task_id, history_id, headers,
+        json_filename, json_bytes, content_type="application/json"
+    )
+    if not ok_json:
+        logging.error("JSON upload failed.")
+        return False
+
+    logging.info("Post-PUT uploads finished.")
+    return True
+
 # -----------------------------------------------------------------------------
 # Main entry
 # -----------------------------------------------------------------------------
@@ -358,45 +394,51 @@ async def update_task(
 
         async with aiohttp.ClientSession(timeout=HTTP_TIMEOUT) as session:
             # 1) Create/Update task history message (todorequests)
-            logging.info("Starting Task Update")
-            ok_put = await _put_task_message(session, task_id, headers, title, assigned_to_user_id, taskcatid, msg)
-            if not ok_put:
-                return False
-
-            # 2) Lock the HISTORY ID *now* (tasks)
-            history_id = await _get_latest_history_id(session, task_id, headers)
-            logging.info("Starting Task History ID")
-            if not history_id:
-                logging.error("Could not find latest history entry to attach files.")
-                return False
-
-            logging.info(f"About to upload {len(part_names_and_bytes)} PDF part(s): {[n for n,_ in part_names_and_bytes]} + {json_filename}")
-
-            # 3) Upload each PDF part (tasks)
-            for part_filename, part_bytes in part_names_and_bytes:
-                logging.info(f"Uploading PDF: {part_filename} ({len(part_bytes)} bytes)")
-                ok_pdf = await _upload_file_for_history(
-                    session, task_id, history_id, headers,
-                    part_filename, part_bytes, content_type="application/pdf"
+            try:
+                logging.info("Entering shielded post-PUT section...")
+                ok_all = await asyncio.shield(
+                    _do_post_put_flow(session, task_id, headers, part_names_and_bytes, json_filename, json_bytes)
                 )
-                if not ok_pdf:
-                    logging.error(f"PDF upload failed for {part_filename}")
+                if not ok_all:
                     return False
+            except asyncio.CancelledError:
+                logging.error("update_task cancelled during post-PUT work (server shutdown or SIGTERM).")
+                raise
 
-            # 4) Upload the JSON payload (tasks)
-            logging.info(f"Uploading JSON: {json_filename} ({len(json_bytes)} bytes)")
-            ok_json = await _upload_file_for_history(
-                session, task_id, history_id, headers,
-                json_filename, json_bytes, content_type="application/json"
-            )
-            if not ok_json:
-                logging.error("JSON upload failed.")
-                return False
+            # # 2) Lock the HISTORY ID *now* (tasks)
+            # history_id = await _get_latest_history_id(session, task_id, headers)
+            # logging.info("Starting Task History ID")
+            # if not history_id:
+            #     logging.error("Could not find latest history entry to attach files.")
+            #     return False
 
-            # 5) Optional: verify attachments appeared (Buildium finalize)
-            if poll_finalize:
-                expected = [name for name, _ in part_names_and_bytes] + [json_filename]
-                await _wait_for_files(session, task_id, history_id, headers, expected_names=expected, timeout_s=30)
+            # logging.info(f"About to upload {len(part_names_and_bytes)} PDF part(s): {[n for n,_ in part_names_and_bytes]} + {json_filename}")
+
+            # # 3) Upload each PDF part (tasks)
+            # for part_filename, part_bytes in part_names_and_bytes:
+            #     logging.info(f"Uploading PDF: {part_filename} ({len(part_bytes)} bytes)")
+            #     ok_pdf = await _upload_file_for_history(
+            #         session, task_id, history_id, headers,
+            #         part_filename, part_bytes, content_type="application/pdf"
+            #     )
+            #     if not ok_pdf:
+            #         logging.error(f"PDF upload failed for {part_filename}")
+            #         return False
+
+            # # 4) Upload the JSON payload (tasks)
+            # logging.info(f"Uploading JSON: {json_filename} ({len(json_bytes)} bytes)")
+            # ok_json = await _upload_file_for_history(
+            #     session, task_id, history_id, headers,
+            #     json_filename, json_bytes, content_type="application/json"
+            # )
+            # if not ok_json:
+            #     logging.error("JSON upload failed.")
+            #     return False
+
+            # # 5) Optional: verify attachments appeared (Buildium finalize)
+            # if poll_finalize:
+            #     expected = [name for name, _ in part_names_and_bytes] + [json_filename]
+            #     await _wait_for_files(session, task_id, history_id, headers, expected_names=expected, timeout_s=30)
 
             logging.info("Task update completed successfully.")
             return True
