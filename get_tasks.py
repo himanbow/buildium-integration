@@ -1,7 +1,8 @@
-import requests
+import aiohttp
 
-def get_task_data(task_id, headers):
-    """Retrieve task data from Buildium API."""
+
+async def get_task_data(task_id, headers):
+    """Retrieve task data from Buildium API asynchronously."""
     # Replace with the actual Buildium API base URL
     base_url = "https://api.buildium.com/v1"
 
@@ -9,15 +10,15 @@ def get_task_data(task_id, headers):
     url = f"{base_url}/tasks/{task_id}"
 
     try:
-        response = requests.get(url, headers=headers)
-
-        # Check if the request was successful
-        if response.status_code == 200:
-            print(f"Retrieved task {task_id}: {response.status_code}")
-            return response.json()  # Return the task data as a dictionary
-        else:
-            print(f"Failed to retrieve task {task_id}: {response.status_code} - {response.text}")
-            return None
-    except requests.exceptions.RequestException as e:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers) as response:
+                if response.status == 200:
+                    print(f"Retrieved task {task_id}: {response.status}")
+                    return await response.json()
+                else:
+                    text = await response.text()
+                    print(f"Failed to retrieve task {task_id}: {response.status} - {text}")
+                    return None
+    except aiohttp.ClientError as e:
         print(f"Error retrieving task {task_id}: {e}")
         return None
