@@ -18,8 +18,11 @@ def formatdate(date):
     
     return date
 
-def create_text_overlay(data, overlay_path):
-    """Create a text overlay with the provided data at specified coordinates."""
+def create_text_overlay(data):
+    """Create a text overlay with the provided data at specified coordinates.
+
+    Returns a ``BytesIO`` stream positioned at the beginning.
+    """
     global today
     packet = io.BytesIO()
     c = canvas.Canvas(packet, pagesize=letter)
@@ -54,17 +57,20 @@ def create_text_overlay(data, overlay_path):
     today = datetime.datetime.today().strftime("%d / %m / %Y")
     c.drawString(320, 287, today)  # Today's date on the second page
 
-    # Save the overlay to a temporary path
+    # Finalize and return the buffer
     c.save()
     packet.seek(0)
+    return packet
 
-    with open(overlay_path, 'wb') as f:
-        f.write(packet.getvalue())
+def merge_pdfs(original_pdf, overlay_pdf_stream):
+    """Merge the text overlay with the original PDF in-memory.
 
-def merge_pdfs(original_pdf, overlay_pdf, output_pdf):
-    """Merge the text overlay with the original PDF."""
+    ``original_pdf`` is a path to the template, ``overlay_pdf_stream`` is a
+    ``BytesIO`` from :func:`create_text_overlay`.
+    Returns a ``BytesIO`` containing the merged PDF.
+    """
     reader = PdfReader(original_pdf)
-    overlay_reader = PdfReader(overlay_pdf)
+    overlay_reader = PdfReader(overlay_pdf_stream)
     writer = PdfWriter()
 
     # Merge overlay with each page
@@ -73,9 +79,11 @@ def merge_pdfs(original_pdf, overlay_pdf, output_pdf):
         page.merge_page(overlay_page)
         writer.add_page(page)
 
-    # Save the merged PDF to the output path
-    with open(output_pdf, 'wb') as f:
-        writer.write(f)
+    # Save the merged PDF to an in-memory buffer and return
+    output_stream = io.BytesIO()
+    writer.write(output_stream)
+    output_stream.seek(0)
+    return output_stream
 
 def formatdollaramount(amount):
     amount = '{:,.2f}'.format(amount)
@@ -139,23 +147,15 @@ async def create(leaseid, data):
         logging.error(msg)
         raise FileNotFoundError(msg)
 
-    # output paths (scratch)
-    overlay_pdf_path = f"/tmp/N1 for Apartment {address_safe} Effective {datename}_overlay.pdf"
-    output_pdf_path  = f"/tmp/N1 for Apartment {address_safe} Effective {datename}.pdf"
+    # 1) create overlay in memory
+    overlay_buffer = create_text_overlay(data)
 
-    # 1) create overlay as before
-    create_text_overlay(data, overlay_pdf_path)
+    # 2) merge overlay onto template in memory
+    merged_buffer = merge_pdfs(str(template_path), overlay_buffer)
 
-    # 2) merge overlay onto template
-    merge_pdfs(str(template_path), overlay_pdf_path, output_pdf_path)
-
-    # 3) cleanup overlay
-    try:
-        os.remove(overlay_pdf_path)
-    except Exception:
-        pass
-
-    return output_pdf_path
+    # 3) return sanitized filename and bytes
+    filename = f"N1 for Apartment {address_safe} Effective {datename}.pdf"
+    return filename, merged_buffer.getvalue()
 
 async def create_summary_page(summary_data, buildingname, countbuilding, date):
     """Create a summary page and return the BytesIO object containing the summary."""
