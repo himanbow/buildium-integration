@@ -2,6 +2,7 @@ import aiohttp
 import logging
 import asyncio
 import os
+import io
 import generateN1notice
 from PyPDF2 import PdfReader, PdfWriter
 import aiofiles
@@ -394,22 +395,13 @@ async def add_summary_page(summary_data, summary_writer, summary_file_path, buil
     except Exception as e:
         logging.error(f"Error adding summary pages: {e}")
 
-async def addtosummary(summary_file_path, filepath, summary_writer):
-    """Append a lease PDF's pages into the in-memory summary; write to file; enforce size < ~19MB."""
+async def addtosummary(filepath, summary_writer):
+    """Append a lease PDF's pages into the in-memory summary."""
     try:
         reader = PdfReader(filepath)
         for page in reader.pages:
             summary_writer.add_page(page)
-
-        with open(summary_file_path, 'wb') as temp_file:
-            summary_writer.write(temp_file)
-
-        current_size = await aiofiles.os.stat(summary_file_path)
-        if current_size.st_size > 19 * 1024 * 1024:  # 19MB guardrail
-            logging.info(f"Summary file {summary_file_path} reached the size limit.")
-            return False
         return True
-
     except Exception as e:
         logging.error(f"Error adding to summary: {e}")
         return False
@@ -457,6 +449,9 @@ async def process(headers, increaseinfo, accountid):
                     summary_index = 1
                     summary_data = []
                     countbuilding = 0
+                    current_summary_size = 0
+                    summary_paths = []
+                    size_limit = 19 * 1024 * 1024  # ~19MB
 
                     # Per-lease processing -- concurrently generate & upload
                     total_leases = len(data['lease_info'])
@@ -491,47 +486,66 @@ async def process(headers, increaseinfo, accountid):
                     tasks = [handle_lease(i, lease) for i, lease in enumerate(data['lease_info'], 1)]
                     results = await asyncio.gather(*tasks)
 
+
                     # Integrate results sequentially for summary creation
-                    summary_file_path = os.path.join(
-                        '/tmp', f"Notices for {buildingname} {datelabel} Part {summary_index}.pdf"
-                    )
                     for res in results:
                         if not res:
                             continue
 
                         lease, filepath, confirmlease = res
 
-                        ok = await addtosummary(summary_file_path, filepath, summary_writer)
-                        if not ok:
-                            # Rollover to a new Part
-                            summary_writer = PdfWriter()
-                            summary_index += 1
-                            summary_file_path = os.path.join(
+                        # Determine size of this lease PDF
+                        try:
+                            file_stat = await aiofiles.os.stat(filepath)
+                            lease_size = file_stat.st_size
+                        except Exception:
+                            lease_size = 0
+
+                        # If adding this lease would exceed the limit, flush current summary to disk
+                        if current_summary_size + lease_size > size_limit and len(summary_writer.pages) > 0:
+                            summary_buffer = io.BytesIO()
+                            summary_writer.write(summary_buffer)
+                            part_path = os.path.join(
                                 '/tmp', f"Notices for {buildingname} {datelabel} Part {summary_index}.pdf"
                             )
-                            ok = await addtosummary(summary_file_path, filepath, summary_writer)
+                            async with aiofiles.open(part_path, 'wb') as f:
+                                await f.write(summary_buffer.getvalue())
+                            summary_paths.append(part_path)
+                            summary_index += 1
+                            summary_writer = PdfWriter()
+                            current_summary_size = 0
 
-                        if confirmlease and ok:
+                        ok = await addtosummary(filepath, summary_writer)
+
+                        if ok and confirmlease:
                             try:
                                 await aiofiles.os.remove(filepath)
                             except Exception as e:
                                 logging.error(f"Cleanup failed for lease file {filepath}: {e}")
 
-                        countall += 1
-                        countbuilding += 1
-                        summary_data.append(lease)
-
+                        if ok:
+                            current_summary_size += lease_size
+                            countall += 1
+                            countbuilding += 1
+                            summary_data.append(lease)
                     # Finalize & upload building summary (if any non-ignored leases and not ignoring building)
                     if summary_data and data.get('ignorebuilding') != "Y" and taskid:
-                        summary_file_path = os.path.join('/tmp', f"Notices for {buildingname} {datelabel} Part {summary_index}.pdf")
+                        summary_file_path = os.path.join(
+                            '/tmp', f"Notices for {buildingname} {datelabel} Part {summary_index}.pdf"
+                        )
 
-                        await add_summary_page(summary_data, summary_writer, summary_file_path, buildingname, countbuilding, datelabel)
+                        await add_summary_page(
+                            summary_data, summary_writer, summary_file_path, buildingname, countbuilding, datelabel
+                        )
 
-                        ok_summary = await uploadsummarytotask(headers, summary_file_path, taskid, session, categoryid)
-                        if ok_summary:
-                            logging.info(f"Summary for {buildingname} uploaded to task.")
-                        else:
-                            logging.error(f"Summary upload failed for {buildingname}.")
+                        summary_paths.append(summary_file_path)
+
+                        for path in summary_paths:
+                            ok_summary = await uploadsummarytotask(headers, path, taskid, session, categoryid)
+                            if ok_summary:
+                                logging.info(f"Summary for {buildingname} uploaded to task: {path}.")
+                            else:
+                                logging.error(f"Summary upload failed for {buildingname}: {path}.")
                     else:
                         if data.get('ignorebuilding') == "Y":
                             logging.info(f"Skipping PDF summary & task for building {buildingid} (ignorebuilding=Y)")
