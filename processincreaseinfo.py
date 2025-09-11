@@ -6,7 +6,6 @@ import io
 import generateN1notice
 from PyPDF2 import PdfReader, PdfWriter
 import aiofiles
-import aiofiles.os
 from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
 
@@ -186,20 +185,14 @@ async def amazondatalease(payload):
 # -------------------- PDF generation per lease (unchanged) --------------------
 async def generateN1files(leaseid, leasedata):
     logging.info(f"Generating Increase Notices for lease {leaseid}")
-    filepath = await generateN1notice.create(leaseid, leasedata)
-    return filepath
+    pdf_bytes, filename = await generateN1notice.create(leaseid, leasedata)
+    return pdf_bytes, filename
 
 # -------------------- upload to Lease (fixed) --------------------
-async def uploadN1filestolease(headers, filepath, leaseid, session, categoryid):
+async def uploadN1filestolease(headers, pdf_bytes, filename, leaseid, session, categoryid):
     logging.info(f"Uploading N1 File to Lease {leaseid}")
 
     try:
-        if not _ensure_exists(filepath):
-            logging.error(f"Lease upload aborted: file not found at {filepath}")
-            return False
-
-        filename = _basename_for_upload(filepath)
-
         # 1) Get presign
         url = "https://api.buildium.com/v1/files/uploadrequests"
         body = {
@@ -218,10 +211,8 @@ async def uploadN1filestolease(headers, filepath, leaseid, session, categoryid):
                 payload = await response.json()
                 form_data, bucket_url = await amazondatalease(payload)
 
-        # 2) Read file and add as LAST field
-        async with aiofiles.open(filepath, 'rb') as f:
-            file_content = await f.read()
-        form_data.add_field("file", file_content, filename=filename, content_type='application/pdf')
+        # 2) Add PDF bytes as LAST field
+        form_data.add_field("file", pdf_bytes, filename=filename, content_type='application/pdf')
 
         # 3) Upload to S3
         async with semaphore:
@@ -380,25 +371,23 @@ async def createtask(headers, buildingid, session, date_label):
         return None
 
 # -------------------- summary helpers --------------------
-async def add_summary_page(summary_data, summary_writer, summary_file_path, buildingname, countbuilding, date_label):
-    """Generate and append summary page(s) to the active summary writer, then persist to file."""
+async def add_summary_page(summary_data, summary_writer, buildingname, countbuilding, date_label):
+    """Generate and append summary page(s) to the active summary writer."""
     try:
         summary_page_buffer = await generateN1notice.create_summary_page(summary_data, buildingname, countbuilding, date_label)
         summary_pdf = PdfReader(summary_page_buffer)
         for page in summary_pdf.pages:
             summary_writer.add_page(page)
-
-        with open(summary_file_path, 'wb') as temp_file:
-            summary_writer.write(temp_file)
-
-        logging.info(f"Summary pages added to {summary_file_path}.")
+        logging.info("Summary pages added to summary writer.")
+        return True
     except Exception as e:
         logging.error(f"Error adding summary pages: {e}")
+        return False
 
-async def addtosummary(filepath, summary_writer):
+async def addtosummary(pdf_bytes, summary_writer):
     """Append a lease PDF's pages into the in-memory summary."""
     try:
-        reader = PdfReader(filepath)
+        reader = PdfReader(io.BytesIO(pdf_bytes))
         for page in reader.pages:
             summary_writer.add_page(page)
         return True
@@ -469,8 +458,8 @@ async def process(headers, increaseinfo, accountid):
                         leaseincreaseinfo = lease['increasenotice']
 
                         # Generate individual N1
-                        filepath = await generateN1files(leaseid, leaseincreaseinfo)
-                        if not filepath:
+                        pdf_bytes, filename = await generateN1files(leaseid, leaseincreaseinfo)
+                        if not pdf_bytes:
                             logging.error(f"Failed N1 generation for {leaseid}")
                             return None
 
@@ -479,9 +468,9 @@ async def process(headers, increaseinfo, accountid):
                         if categoryid is None:
                             logging.error("No category id available for lease uploads.")
                         else:
-                            confirmlease = await uploadN1filestolease(headers, filepath, leaseid, session, categoryid)
+                            confirmlease = await uploadN1filestolease(headers, pdf_bytes, filename, leaseid, session, categoryid)
 
-                        return lease, filepath, confirmlease
+                        return lease, pdf_bytes, confirmlease
 
                     tasks = [handle_lease(i, lease) for i, lease in enumerate(data['lease_info'], 1)]
                     results = await asyncio.gather(*tasks)
@@ -492,14 +481,9 @@ async def process(headers, increaseinfo, accountid):
                         if not res:
                             continue
 
-                        lease, filepath, confirmlease = res
+                        lease, pdf_bytes, confirmlease = res
 
-                        # Determine size of this lease PDF
-                        try:
-                            file_stat = await aiofiles.os.stat(filepath)
-                            lease_size = file_stat.st_size
-                        except Exception:
-                            lease_size = 0
+                        lease_size = len(pdf_bytes) if pdf_bytes else 0
 
                         # If adding this lease would exceed the limit, flush current summary to disk
                         if current_summary_size + lease_size > size_limit and len(summary_writer.pages) > 0:
@@ -515,13 +499,7 @@ async def process(headers, increaseinfo, accountid):
                             summary_writer = PdfWriter()
                             current_summary_size = 0
 
-                        ok = await addtosummary(filepath, summary_writer)
-
-                        if ok and confirmlease:
-                            try:
-                                await aiofiles.os.remove(filepath)
-                            except Exception as e:
-                                logging.error(f"Cleanup failed for lease file {filepath}: {e}")
+                        ok = await addtosummary(pdf_bytes, summary_writer)
 
                         if ok:
                             current_summary_size += lease_size
@@ -534,11 +512,16 @@ async def process(headers, increaseinfo, accountid):
                             '/tmp', f"Notices for {buildingname} {datelabel} Part {summary_index}.pdf"
                         )
 
-                        await add_summary_page(
-                            summary_data, summary_writer, summary_file_path, buildingname, countbuilding, datelabel
+                        added = await add_summary_page(
+                            summary_data, summary_writer, buildingname, countbuilding, datelabel
                         )
 
-                        summary_paths.append(summary_file_path)
+                        if added:
+                            summary_buffer = io.BytesIO()
+                            summary_writer.write(summary_buffer)
+                            async with aiofiles.open(summary_file_path, 'wb') as f:
+                                await f.write(summary_buffer.getvalue())
+                            summary_paths.append(summary_file_path)
 
                         for path in summary_paths:
                             ok_summary = await uploadsummarytotask(headers, path, taskid, session, categoryid)
@@ -554,5 +537,4 @@ async def process(headers, increaseinfo, accountid):
 
     except Exception as e:
         logging.error(f"Error processing leases data: {e}")
-
-    print(countall)
+    return countall
