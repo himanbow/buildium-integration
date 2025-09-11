@@ -63,11 +63,6 @@ async def get_lease_notes(session, lease_id, headers):
         logging.info(f"No notes found for lease {lease_id}")
     return notes
 
-async def get_building_notes(session, building_id, headers):
-    """Retrieve notes for a building to check for AGI status asynchronously."""
-    url = f"https://api.buildium.com/v1/rentals/{building_id}/notes"
-    return await fetch_data(session, url, headers)
-
 async def get_unit_details(session, unit_id, headers):
     """Retrieve details of the rental unit, including market rent asynchronously."""
     url = f"https://api.buildium.com/v1/rentals/units/{unit_id}"
