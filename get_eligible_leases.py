@@ -5,8 +5,9 @@ from collections import defaultdict
 import logging
 import re
 
+from rate_limiter import semaphore
+
 building_notes_cache = {}
-semaphore = asyncio.Semaphore(2)
 
 async def fetch_data(session, url, headers):
     """Fetch data asynchronously with rate limiting and semaphore control."""
@@ -83,13 +84,14 @@ async def get_leases(session, headers, increase_effective_date):
             'offset': offset,
         }
         
-        async with session.get(url, headers=headers, params=params) as response:
-            leases = await response.json()
-            if not leases:
-                break
+        async with semaphore:
+            async with session.get(url, headers=headers, params=params) as response:
+                leases = await response.json()
+                if not leases:
+                    break
 
-            all_leases.extend(leases)
-            offset += limit
+                all_leases.extend(leases)
+                offset += limit
 
     logging.info(f"Fetched {len(all_leases)} leases")
     return all_leases

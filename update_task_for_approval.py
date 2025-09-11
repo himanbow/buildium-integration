@@ -10,6 +10,8 @@ from tempfile import NamedTemporaryFile
 from typing import Optional
 from pathlib import Path
 
+from rate_limiter import semaphore
+
 from build_prelim_increase_report import build_increase_report_pdf
 
 # -----------------------------------------------------------------------------
@@ -98,13 +100,14 @@ async def _put_task_message(
         "Message": msg,
         "Date": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
     }
-    async with session.put(url_task, json=payload, headers=headers) as r:
-        body = await r.text()
-        if r.status == 200:
-            logging.info("Task updated (PUT todorequests).")
-            return True
-        logging.error(f"Task PUT failed: {r.status} {body[:500]}")
-        return False
+    async with semaphore:
+        async with session.put(url_task, json=payload, headers=headers) as r:
+            body = await r.text()
+            if r.status == 200:
+                logging.info("Task updated (PUT todorequests).")
+                return True
+            logging.error(f"Task PUT failed: {r.status} {body[:500]}")
+            return False
 
 
 async def _get_latest_history_id(
@@ -113,16 +116,17 @@ async def _get_latest_history_id(
     # History is under /v1/tasks
     url_hist = f"{BASE_API}/{TASKS_RESOURCE}/{task_id}/history"
     logging.info(f"Fetching latest task history id for task_id={task_id} ({url_hist})")
-    async with session.get(url_hist, headers=headers) as r_hist:
-        body = await r_hist.text()
-        if r_hist.status != 200:
-            logging.error(f"History GET failed: {r_hist.status} {body[:500]}")
-            return None
-        try:
-            hist = json.loads(body)
-        except Exception as e:
-            logging.error(f"History JSON parse error: {e} body={body[:500]}")
-            return None
+    async with semaphore:
+        async with session.get(url_hist, headers=headers) as r_hist:
+            body = await r_hist.text()
+            if r_hist.status != 200:
+                logging.error(f"History GET failed: {r_hist.status} {body[:500]}")
+                return None
+            try:
+                hist = json.loads(body)
+            except Exception as e:
+                logging.error(f"History JSON parse error: {e} body={body[:500]}")
+                return None
 
         if not hist:
             logging.error("History list empty; cannot lock an entry.")
@@ -156,16 +160,17 @@ async def _upload_file_for_history(
         logging.info(f"[presign] start filename='{filename}', size={len(file_bytes)} bytes")
 
         url_presign = f"{BASE_API}/{TASKS_RESOURCE}/{task_id}/history/{history_id}/files/uploadrequests"
-        async with session.post(url_presign, json={"FileName": filename}, headers=headers) as r_pre:
-            pre_text = await r_pre.text()
-            if r_pre.status != 201:
-                logging.error(f"[presign] FAIL {r_pre.status} {pre_text[:500]}")
-                return False
-            try:
-                pre = json.loads(pre_text)
-            except Exception as e:
-                logging.error(f"[presign] JSON parse error: {e} body={pre_text[:500]}")
-                return False
+        async with semaphore:
+            async with session.post(url_presign, json={"FileName": filename}, headers=headers) as r_pre:
+                pre_text = await r_pre.text()
+                if r_pre.status != 201:
+                    logging.error(f"[presign] FAIL {r_pre.status} {pre_text[:500]}")
+                    return False
+                try:
+                    pre = json.loads(pre_text)
+                except Exception as e:
+                    logging.error(f"[presign] JSON parse error: {e} body={pre_text[:500]}")
+                    return False
 
         form = pre.get("FormData") or {}
         bucket_url = pre.get("BucketUrl")
@@ -204,13 +209,14 @@ async def _upload_file_for_history(
         form_data.add_field("file", file_bytes, filename=file_name, content_type=file_ct)
 
         logging.info(f"[upload] POST {bucket_url}")
-        async with session.post(bucket_url, data=form_data) as resp:
-            body = await resp.text()
-            if resp.status in (204, 200, 201):
-                logging.info(f"[upload] OK {resp.status} '{file_name}' body={body[:200]}")
-                return True
-            logging.error(f"[upload] FAIL {resp.status} '{file_name}' body={body[:500]}")
-            return False
+        async with semaphore:
+            async with session.post(bucket_url, data=form_data) as resp:
+                body = await resp.text()
+                if resp.status in (204, 200, 201):
+                    logging.info(f"[upload] OK {resp.status} '{file_name}' body={body[:200]}")
+                    return True
+                logging.error(f"[upload] FAIL {resp.status} '{file_name}' body={body[:500]}")
+                return False
 
     except asyncio.CancelledError:
         logging.error(f"[upload] Cancelled while uploading '{filename}' (shutdown in progress).")
@@ -238,17 +244,18 @@ async def _wait_for_files(
 
     logging.info(f"Polling for files to appear on history {history_id}: {sorted(want)}")
     while time.monotonic() < deadline:
-        async with session.get(url, headers=headers) as r:
-            body = await r.text()
-            if r.status == 200:
-                try:
-                    items = json.loads(body) or []
-                except Exception:
-                    items = []
-                names = {(i.get("FileName") or i.get("Title") or "").strip() for i in items}
-                if want.issubset(names):
-                    logging.info("All attachments visible on history.")
-                    return True
+        async with semaphore:
+            async with session.get(url, headers=headers) as r:
+                body = await r.text()
+                if r.status == 200:
+                    try:
+                        items = json.loads(body) or []
+                    except Exception:
+                        items = []
+                    names = {(i.get("FileName") or i.get("Title") or "").strip() for i in items}
+                    if want.issubset(names):
+                        logging.info("All attachments visible on history.")
+                        return True
         await asyncio.sleep(1.5)
     logging.warning("Attachments did not appear within timeout.")
     return False

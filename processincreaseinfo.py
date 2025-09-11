@@ -9,8 +9,7 @@ import aiofiles.os
 from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
 
-# Limit concurrent outbound requests globally
-semaphore = asyncio.Semaphore(2)
+from rate_limiter import semaphore
 
 # -------------------- small helpers --------------------
 def _is_ignored(v) -> bool:
@@ -60,26 +59,28 @@ async def category(headers, session, date_label: str):
     """Find or create a Files Category named 'Increases {date_label}' and return its Id."""
     url = "https://api.buildium.com/v1/files/categories"
     params = {'limit': 1000}
-    async with session.get(url, headers=headers, params=params) as response:
-        if response.status != 200:
-            logging.error(f"Failed to fetch file categories: {response.status} {await response.text()}")
-            return None
+    async with semaphore:
+        async with session.get(url, headers=headers, params=params) as response:
+            if response.status != 200:
+                logging.error(f"Failed to fetch file categories: {response.status} {await response.text()}")
+                return None
 
-        category_list = await response.json()
-        category_id = None
-        for cat in category_list:
-            if cat.get('Name') == f'Increases {date_label}':
-                category_id = cat.get('Id')
-                break
+            category_list = await response.json()
+            category_id = None
+            for cat in category_list:
+                if cat.get('Name') == f'Increases {date_label}':
+                    category_id = cat.get('Id')
+                    break
 
-        if category_id is None:
-            payload = {'Name': f'Increases {date_label}'}
-            async with session.post(url, headers=headers, json=payload) as r2:
-                if r2.status != 201:
-                    logging.error(f"Failed creating file category: {r2.status} {await r2.text()}")
-                    return None
-                cat_json = await r2.json()
-                category_id = cat_json.get('Id')
+            if category_id is None:
+                payload = {'Name': f'Increases {date_label}'}
+                async with semaphore:
+                    async with session.post(url, headers=headers, json=payload) as r2:
+                        if r2.status != 201:
+                            logging.error(f"Failed creating file category: {r2.status} {await r2.text()}")
+                            return None
+                        cat_json = await r2.json()
+                        category_id = cat_json.get('Id')
     return category_id
 
 # -------------------- presigned form helpers --------------------
@@ -207,13 +208,14 @@ async def uploadN1filestolease(headers, filepath, leaseid, session, categoryid):
             "Title": filename,
             "CategoryId": categoryid
         }
-        async with session.post(url, json=body, headers=headers) as response:
-            if response.status != 201:
-                logging.info(f"Error while submitting lease file metadata: {response.status} {await response.text()}")
-                return False
+        async with semaphore:
+            async with session.post(url, json=body, headers=headers) as response:
+                if response.status != 201:
+                    logging.info(f"Error while submitting lease file metadata: {response.status} {await response.text()}")
+                    return False
 
-            payload = await response.json()
-            form_data, bucket_url = await amazondatalease(payload)
+                payload = await response.json()
+                form_data, bucket_url = await amazondatalease(payload)
 
         # 2) Read file and add as LAST field
         async with aiofiles.open(filepath, 'rb') as f:
@@ -221,13 +223,14 @@ async def uploadN1filestolease(headers, filepath, leaseid, session, categoryid):
         form_data.add_field("file", file_content, filename=filename, content_type='application/pdf')
 
         # 3) Upload to S3
-        async with session.post(bucket_url, data=form_data) as upload_response:
-            if upload_response.status == 204:
-                logging.info(f"Upload of Notice for {leaseid} successful.")
-                return True
-            else:
-                logging.info(f"Error Uploading Notice for {leaseid}: {upload_response.status} {await upload_response.text()}")
-                return False
+        async with semaphore:
+            async with session.post(bucket_url, data=form_data) as upload_response:
+                if upload_response.status == 204:
+                    logging.info(f"Upload of Notice for {leaseid} successful.")
+                    return True
+                else:
+                    logging.info(f"Error Uploading Notice for {leaseid}: {upload_response.status} {await upload_response.text()}")
+                    return False
 
     except Exception as e:
         logging.info(f"An error occurred uploading N1 for lease {leaseid}: {str(e)}")
@@ -246,12 +249,13 @@ async def uploadsummarytotask(headers, filepath, taskid, session, categoryid):
 
         # 1) Get latest task history id (newest first)
         urltaskhistory = f"https://api.buildium.com/v1/tasks/{taskid}/history"
-        async with session.get(urltaskhistory, headers=headers) as response:
-            if response.status != 200:
-                logging.info(f"Error while getting task history: {response.status} {await response.text()}")
-                return False
+        async with semaphore:
+            async with session.get(urltaskhistory, headers=headers) as response:
+                if response.status != 200:
+                    logging.info(f"Error while getting task history: {response.status} {await response.text()}")
+                    return False
 
-            taskhistorydata = await response.json()
+                taskhistorydata = await response.json()
             try:
                 taskhistorydata.sort(key=lambda h: h.get("Date") or h.get("CreatedDate") or "", reverse=True)
             except Exception:
@@ -264,13 +268,14 @@ async def uploadsummarytotask(headers, filepath, taskid, session, categoryid):
         # 2) Presign for this history entry
         url = f"https://api.buildium.com/v1/tasks/{taskid}/history/{taskhistoryid}/files/uploadrequests"
         body = {"FileName": filename}
-        async with session.post(url, json=body, headers=headers) as response:
-            if response.status != 201:
-                logging.info(f"Error while submitting task file metadata: {response.status} {await response.text()}")
-                return False
+        async with semaphore:
+            async with session.post(url, json=body, headers=headers) as response:
+                if response.status != 201:
+                    logging.info(f"Error while submitting task file metadata: {response.status} {await response.text()}")
+                    return False
 
-            payload = await response.json()
-            form_data, bucket_url = await amazondatatask(payload)
+                payload = await response.json()
+                form_data, bucket_url = await amazondatatask(payload)
 
         # 3) Read PDF + add LAST
         async with aiofiles.open(filepath, 'rb') as f:
@@ -278,13 +283,14 @@ async def uploadsummarytotask(headers, filepath, taskid, session, categoryid):
         form_data.add_field("file", file_content, filename=filename, content_type='application/pdf')
 
         # 4) Upload to S3
-        async with session.post(bucket_url, data=form_data) as upload_response:
-            if upload_response.status == 204:
-                logging.info(f"Upload successful for Task {taskid}.")
-                return True
-            else:
-                logging.info(f"Error Uploading File for Task {taskid}: {upload_response.status} {await upload_response.text()}")
-                return False
+        async with semaphore:
+            async with session.post(bucket_url, data=form_data) as upload_response:
+                if upload_response.status == 204:
+                    logging.info(f"Upload successful for Task {taskid}.")
+                    return True
+                else:
+                    logging.info(f"Error Uploading File for Task {taskid}: {upload_response.status} {await upload_response.text()}")
+                    return False
 
     except Exception as e:
         logging.error(f"Error Uploading Summary to task: {e}")
@@ -295,10 +301,11 @@ async def leaserenewalingored(headers, leaseid, lease, session):
     """When a lease is ignored for increases, extend LeaseToDate by +6 months."""
     try:
         url = f"https://api.buildium.com/v1/leases/{leaseid}"
-        async with session.get(url, headers=headers) as response:
-            data = await response.json()
-            date = datetime.strptime(data["LeaseToDate"], "%Y-%m-%d")
-            date = (date + relativedelta(months=6)).strftime("%Y-%m-%d")
+        async with semaphore:
+            async with session.get(url, headers=headers) as response:
+                data = await response.json()
+                date = datetime.strptime(data["LeaseToDate"], "%Y-%m-%d")
+                date = (date + relativedelta(months=6)).strftime("%Y-%m-%d")
 
         payload = {
             "LeaseType": data["LeaseType"],
@@ -307,11 +314,12 @@ async def leaserenewalingored(headers, leaseid, lease, session):
             "LeaseToDate": date,
             "IsEvictionPending": data['IsEvictionPending'],
         }
-        async with session.put(url, json=payload, headers=headers) as response:
-            if response.status == 200:
-                logging.info(f"Extension Completed for {leaseid}.")
-            else:
-                logging.error(f"Error extending {leaseid}: {response.status} {await response.text()}")
+        async with semaphore:
+            async with session.put(url, json=payload, headers=headers) as response:
+                if response.status == 200:
+                    logging.info(f"Extension Completed for {leaseid}.")
+                else:
+                    logging.error(f"Error extending {leaseid}: {response.status} {await response.text()}")
     except Exception as e:
         logging.error(f"Error in leaserenewalingored for {leaseid}: {e}")
 
@@ -320,11 +328,12 @@ async def setevictionstatus(leaseid, eviction: bool, session, headers) -> bool:
     """Set IsEvictionPending to the supplied boolean; return True/False for success."""
     try:
         url = f"https://api.buildium.com/v1/leases/{leaseid}"
-        async with session.get(url, headers=headers) as response:
-            if response.status != 200:
-                logging.error(f"GET lease {leaseid} failed: {response.status} {await response.text()}")
-                return False
-            data = await response.json()
+        async with semaphore:
+            async with session.get(url, headers=headers) as response:
+                if response.status != 200:
+                    logging.error(f"GET lease {leaseid} failed: {response.status} {await response.text()}")
+                    return False
+                data = await response.json()
 
         payload = {
             "LeaseType": data["LeaseType"],
@@ -334,13 +343,14 @@ async def setevictionstatus(leaseid, eviction: bool, session, headers) -> bool:
             "IsEvictionPending": eviction,
             "AutomaticallyMoveOutTenants": False
         }
-        async with session.put(url, json=payload, headers=headers) as response:
-            if response.status == 200:
-                logging.info(f"Eviction flag set to {eviction} for lease {leaseid}.")
-                return True
-            else:
-                logging.error(f"Error setting eviction for {leaseid}: {response.status} {await response.text()}")
-                return False
+        async with semaphore:
+            async with session.put(url, json=payload, headers=headers) as response:
+                if response.status == 200:
+                    logging.info(f"Eviction flag set to {eviction} for lease {leaseid}.")
+                    return True
+                else:
+                    logging.error(f"Error setting eviction for {leaseid}: {response.status} {await response.text()}")
+                    return False
     except Exception as e:
         logging.error(f"Exception in setevictionstatus for {leaseid}: {e}")
         return False
@@ -377,28 +387,40 @@ async def leaserenewals(headers, leaseid, lease, session, max_retries: int = 3):
 
         # Attempts loop (no recursion)
         for attempt in range(1, max_retries + 1):
-            async with session.post(url, json=payloadstr, headers=headers) as response:
-                if response.status == 201:
-                    logging.info(f"Renewal Completed for {leaseid}.")
-                    return True
-                if response.status == 409:
-                    logging.warning(f"Lease {leaseid} renewal 409 (attempt {attempt}/{max_retries}); toggling eviction and retrying...")
-                    set_ok = await setevictionstatus(leaseid, True, session, headers)
-                    if not set_ok:
-                        logging.error(f"Failed to set eviction flag for {leaseid}; aborting renewal.")
+            async with semaphore:
+                async with session.post(url, json=payloadstr, headers=headers) as response:
+                    if response.status == 201:
+                        logging.info(f"Renewal Completed for {leaseid}.")
+                        return True
+                    if response.status == 409:
+                        logging.warning(
+                            f"Lease {leaseid} renewal 409 (attempt {attempt}/{max_retries}); toggling eviction and retrying..."
+                        )
+                        set_ok = await setevictionstatus(leaseid, True, session, headers)
+                        if not set_ok:
+                            logging.error(
+                                f"Failed to set eviction flag for {leaseid}; aborting renewal."
+                            )
+                            return False
+                        # Retry immediately with eviction set
+                        async with semaphore:
+                            async with session.post(url, json=payloadstr, headers=headers) as r2:
+                                if r2.status == 201:
+                                    logging.info(
+                                        f"Renewal Completed for {leaseid} after eviction toggle."
+                                    )
+                                    await setevictionstatus(leaseid, False, session, headers)
+                                    return True
+                                else:
+                                    await setevictionstatus(leaseid, False, session, headers)
+                                    logging.error(
+                                        f"Retry after eviction toggle failed for {leaseid}: {r2.status} {await r2.text()}"
+                                    )
+                    else:
+                        logging.error(
+                            f"Error renewing {leaseid}: {response.status} {await response.text()}"
+                        )
                         return False
-                    # Retry immediately with eviction set
-                    async with session.post(url, json=payloadstr, headers=headers) as r2:
-                        if r2.status == 201:
-                            logging.info(f"Renewal Completed for {leaseid} after eviction toggle.")
-                            await setevictionstatus(leaseid, False, session, headers)
-                            return True
-                        else:
-                            await setevictionstatus(leaseid, False, session, headers)
-                            logging.error(f"Retry after eviction toggle failed for {leaseid}: {r2.status} {await r2.text()}")
-                else:
-                    logging.error(f"Error renewing {leaseid}: {response.status} {await response.text()}")
-                    return False
 
             # backoff before next attempt
             await asyncio.sleep(0.5 * attempt)
@@ -421,32 +443,35 @@ async def createtask(headers, buildingid, session, date_label):
 
     try:
         # Get rental (for AssignedToUserId and Name)
-        async with session.get(url_rental, headers=headers) as response:
-            if response.status != 200:
-                logging.error(f"Failed to fetch building data. Status: {response.status}")
-                return None
-            rental = await response.json()
-            userid = _safe_get(rental, ['RentalManager', 'Id'])
-            buildingname = rental.get('Name')
+        async with semaphore:
+            async with session.get(url_rental, headers=headers) as response:
+                if response.status != 200:
+                    logging.error(f"Failed to fetch building data. Status: {response.status}")
+                    return None
+                rental = await response.json()
+                userid = _safe_get(rental, ['RentalManager', 'Id'])
+                buildingname = rental.get('Name')
 
         # Find/create task category 'Increase Notices'
-        async with session.get(url_cat, params=params, headers=headers) as response:
-            if response.status != 200:
-                logging.error(f"Failed to fetch task categories. Status: {response.status}")
-                return None
-            category_list = await response.json()
-            category_id = None
-            for c in category_list:
-                if c.get('Name') == 'Increase Notices':
-                    category_id = c.get('Id')
-                    break
-            if category_id is None:
-                payload = {'Name': 'Increase Notices'}
-                async with session.post(url_cat, headers=headers, json=payload) as r2:
-                    if r2.status != 201:
-                        logging.error(f"Failed to create task category. Status: {r2.status}")
-                        return None
-                    category_id = (await r2.json()).get('Id')
+        async with semaphore:
+            async with session.get(url_cat, params=params, headers=headers) as response:
+                if response.status != 200:
+                    logging.error(f"Failed to fetch task categories. Status: {response.status}")
+                    return None
+                category_list = await response.json()
+                category_id = None
+                for c in category_list:
+                    if c.get('Name') == 'Increase Notices':
+                        category_id = c.get('Id')
+                        break
+                if category_id is None:
+                    payload = {'Name': 'Increase Notices'}
+                    async with semaphore:
+                        async with session.post(url_cat, headers=headers, json=payload) as r2:
+                            if r2.status != 201:
+                                logging.error(f"Failed to create task category. Status: {r2.status}")
+                                return None
+                            category_id = (await r2.json()).get('Id')
 
         # Create the task
         payloadtask = {
@@ -459,14 +484,15 @@ async def createtask(headers, buildingid, session, date_label):
             'Priority': "High",
             'DueDate': datetime.now().strftime("%Y-%m-%d")
         }
-        async with session.post(url_task, json=payloadtask, headers=headers) as response:
-            if response.status != 201:
-                logging.error(f"Failed to create task. Status: {response.status} {await response.text()}")
-                return None
-            task_data = await response.json()
-            taskid = task_data.get('Id', 0)
-            logging.info(f"Task created successfully with ID: {taskid}")
-            return taskid
+        async with semaphore:
+            async with session.post(url_task, json=payloadtask, headers=headers) as response:
+                if response.status != 201:
+                    logging.error(f"Failed to create task. Status: {response.status} {await response.text()}")
+                    return None
+                task_data = await response.json()
+                taskid = task_data.get('Id', 0)
+                logging.info(f"Task created successfully with ID: {taskid}")
+                return taskid
 
     except Exception as e:
         logging.error(f"Error creating task: {e}")

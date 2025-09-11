@@ -6,6 +6,8 @@ import logging
 import aiohttp
 from aiohttp import ClientTimeout
 
+from rate_limiter import semaphore
+
 def _best_name(meta: dict) -> str:
     """Return the best-available filename from assorted schemas."""
     return (
@@ -31,11 +33,12 @@ async def decode(headers, task_data, client_secret):
         try:
             # 1) Get history (newest first)
             url_hist = f"https://api.buildium.com/v1/tasks/{task_id}/history"
-            async with session.get(url_hist, headers=headers) as resp:
-                if resp.status != 200:
-                    logging.error(f"history GET failed: {resp.status} {await resp.text()}")
-                    return None
-                history = await resp.json()
+            async with semaphore:
+                async with session.get(url_hist, headers=headers) as resp:
+                    if resp.status != 200:
+                        logging.error(f"history GET failed: {resp.status} {await resp.text()}")
+                        return None
+                    history = await resp.json()
             try:
                 history.sort(key=lambda h: h.get("Date") or h.get("CreatedDate") or "", reverse=True)
             except Exception:
@@ -50,11 +53,12 @@ async def decode(headers, task_data, client_secret):
             for h in history:
                 hid = h.get("Id")
                 files_url = f"https://api.buildium.com/v1/tasks/{task_id}/history/{hid}/files"
-                async with session.get(files_url, headers=headers) as rf:
-                    if rf.status != 200:
-                        logging.warning(f"files GET {hid} failed: {rf.status} {await rf.text()}")
-                        continue
-                    files = await rf.json()  # list of dicts; may or may not include names
+                async with semaphore:
+                    async with session.get(files_url, headers=headers) as rf:
+                        if rf.status != 200:
+                            logging.warning(f"files GET {hid} failed: {rf.status} {await rf.text()}")
+                            continue
+                        files = await rf.json()  # list of dicts; may or may not include names
 
                 # First pass: try to match data.json by any name field present
                 for f in files:
@@ -74,10 +78,11 @@ async def decode(headers, task_data, client_secret):
                     if not fid:
                         continue
                     meta_url = f"https://api.buildium.com/v1/files/{fid}"
-                    async with session.get(meta_url, headers=headers) as mf:
-                        if mf.status != 200:
-                            continue
-                        meta = await mf.json()
+                    async with semaphore:
+                        async with session.get(meta_url, headers=headers) as mf:
+                            if mf.status != 200:
+                                continue
+                            meta = await mf.json()
                     name = _best_name(meta)
                     ctype = _ctype(meta)
                     seen.append(name or fid)
@@ -97,22 +102,24 @@ async def decode(headers, task_data, client_secret):
 
             # 3) Get download URL
             url_dl_req = f"https://api.buildium.com/v1/tasks/{task_id}/history/{chosen_hid}/files/{chosen_fid}/downloadrequest"
-            async with session.post(url_dl_req, headers=headers, json={}) as dr:
-                if dr.status not in (200, 201):
-                    logging.error(f"downloadrequest POST failed: {dr.status} {await dr.text()}")
-                    return None
-                dl = await dr.json()
-                download_url = dl.get("DownloadUrl")
-                if not download_url:
-                    logging.error(f"No DownloadUrl in response: {dl}")
-                    return None
+            async with semaphore:
+                async with session.post(url_dl_req, headers=headers, json={}) as dr:
+                    if dr.status not in (200, 201):
+                        logging.error(f"downloadrequest POST failed: {dr.status} {await dr.text()}")
+                        return None
+                    dl = await dr.json()
+                    download_url = dl.get("DownloadUrl")
+                    if not download_url:
+                        logging.error(f"No DownloadUrl in response: {dl}")
+                        return None
 
             # 4) Download bytes
-            async with session.get(download_url) as df:
-                if df.status != 200:
-                    logging.error(f"download GET failed: {df.status} {await df.text()}")
-                    return None
-                data_bytes = await df.read()
+            async with semaphore:
+                async with session.get(download_url) as df:
+                    if df.status != 200:
+                        logging.error(f"download GET failed: {df.status} {await df.text()}")
+                        return None
+                    data_bytes = await df.read()
 
             # 5) Decrypt & parse
             tmp_dir = tempfile.gettempdir()
