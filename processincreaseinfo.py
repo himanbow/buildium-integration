@@ -151,22 +151,6 @@ def _build_formdata_from_form(form, preferred_order):
 
     return fd
 
-def _basename_for_upload(path: str) -> str:
-    """
-    Return just the filename from any path (Windows or POSIX).
-    """
-    if not path:
-        return ""
-    # normalize backslashes to slashes first
-    norm = path.replace("\\", "/")
-    return os.path.basename(norm)
-
-def _ensure_exists(path: str) -> bool:
-    try:
-        return os.path.isfile(path)
-    except Exception:
-        return False
-
 # ---------- existing form builders (you already have these) ----------
 
 async def amazondatatask(payload):
@@ -183,45 +167,43 @@ async def amazondatalease(payload):
     bucket_url = payload["BucketUrl"]
     return form_data, bucket_url
 
-# -------------------- PDF generation per lease (unchanged) --------------------
+# -------------------- PDF generation per lease --------------------
 async def generateN1files(leaseid, leasedata):
+    """Generate an N1 notice for a lease and return (filename, pdf_bytes)."""
     logging.info(f"Generating Increase Notices for lease {leaseid}")
-    filepath = await generateN1notice.create(leaseid, leasedata)
-    return filepath
+    filename, pdf_bytes = await generateN1notice.create(leaseid, leasedata)
+    return filename, pdf_bytes
 
-# -------------------- upload to Lease (fixed) --------------------
-async def uploadN1filestolease(headers, filepath, leaseid, session, categoryid):
+# -------------------- upload to Lease --------------------
+async def uploadN1filestolease(headers, filename, file_bytes, leaseid, session, categoryid):
+    """Upload an in-memory N1 PDF to the given lease."""
     logging.info(f"Uploading N1 File to Lease {leaseid}")
 
     try:
-        if not _ensure_exists(filepath):
-            logging.error(f"Lease upload aborted: file not found at {filepath}")
-            return False
-
-        filename = _basename_for_upload(filepath)
-
         # 1) Get presign
         url = "https://api.buildium.com/v1/files/uploadrequests"
         body = {
             "EntityType": "Lease",
             "EntityId": leaseid,
-            "FileName": filename,   # must be just the name
+            "FileName": filename,  # must be just the name
             "Title": filename,
-            "CategoryId": categoryid
+            "CategoryId": categoryid,
         }
         async with semaphore:
             async with session.post(url, json=body, headers=headers) as response:
                 if response.status != 201:
-                    logging.info(f"Error while submitting lease file metadata: {response.status} {await response.text()}")
+                    logging.info(
+                        f"Error while submitting lease file metadata: {response.status} {await response.text()}"
+                    )
                     return False
 
                 payload = await response.json()
                 form_data, bucket_url = await amazondatalease(payload)
 
-        # 2) Read file and add as LAST field
-        async with aiofiles.open(filepath, 'rb') as f:
-            file_content = await f.read()
-        form_data.add_field("file", file_content, filename=filename, content_type='application/pdf')
+        # 2) Add PDF bytes as LAST field
+        form_data.add_field(
+            "file", file_bytes, filename=filename, content_type="application/pdf"
+        )
 
         # 3) Upload to S3
         async with semaphore:
@@ -230,58 +212,66 @@ async def uploadN1filestolease(headers, filepath, leaseid, session, categoryid):
                     logging.info(f"Upload of Notice for {leaseid} successful.")
                     return True
                 else:
-                    logging.info(f"Error Uploading Notice for {leaseid}: {upload_response.status} {await upload_response.text()}")
+                    logging.info(
+                        f"Error Uploading Notice for {leaseid}: {upload_response.status} {await upload_response.text()}"
+                    )
                     return False
 
     except Exception as e:
-        logging.info(f"An error occurred uploading N1 for lease {leaseid}: {str(e)}")
+        logging.info(
+            f"An error occurred uploading N1 for lease {leaseid}: {str(e)}"
+        )
         return False
 
-# -------------------- upload summary to Task (fixed) --------------------
-async def uploadsummarytotask(headers, filepath, taskid, session, categoryid):
+# -------------------- upload summary to Task --------------------
+async def uploadsummarytotask(headers, filename, file_bytes, taskid, session, categoryid):
+    """Upload an in-memory summary PDF to the given task."""
     logging.info(f"Uploading Summary to Task {taskid}")
 
     try:
-        if not _ensure_exists(filepath):
-            logging.error(f"Task upload aborted: file not found at {filepath}")
-            return False
-
-        filename = _basename_for_upload(filepath)
-
         # 1) Get latest task history id (newest first)
         urltaskhistory = f"https://api.buildium.com/v1/tasks/{taskid}/history"
         async with semaphore:
             async with session.get(urltaskhistory, headers=headers) as response:
                 if response.status != 200:
-                    logging.info(f"Error while getting task history: {response.status} {await response.text()}")
+                    logging.info(
+                        f"Error while getting task history: {response.status} {await response.text()}"
+                    )
                     return False
 
                 taskhistorydata = await response.json()
             try:
-                taskhistorydata.sort(key=lambda h: h.get("Date") or h.get("CreatedDate") or "", reverse=True)
+                taskhistorydata.sort(
+                    key=lambda h: h.get("Date") or h.get("CreatedDate") or "",
+                    reverse=True,
+                )
             except Exception:
                 pass
             if not taskhistorydata:
                 logging.info("No task history entries found to attach file to.")
                 return False
-            taskhistoryid = taskhistorydata[0]['Id']
+            taskhistoryid = taskhistorydata[0]["Id"]
 
         # 2) Presign for this history entry
-        url = f"https://api.buildium.com/v1/tasks/{taskid}/history/{taskhistoryid}/files/uploadrequests"
+        url = (
+            f"https://api.buildium.com/v1/tasks/{taskid}/history/{taskhistoryid}/files/uploadrequests"
+        )
         body = {"FileName": filename}
         async with semaphore:
             async with session.post(url, json=body, headers=headers) as response:
                 if response.status != 201:
-                    logging.info(f"Error while submitting task file metadata: {response.status} {await response.text()}")
+                    logging.info(
+                        f"Error while submitting task file metadata: {response.status} {await response.text()}"
+                    )
                     return False
 
                 payload = await response.json()
                 form_data, bucket_url = await amazondatatask(payload)
 
-        # 3) Read PDF + add LAST
-        async with aiofiles.open(filepath, 'rb') as f:
-            file_content = await f.read()
-        form_data.add_field("file", file_content, filename=filename, content_type='application/pdf')
+        # 3) Add PDF bytes LAST
+        form_data.add_field(
+            "file", file_bytes, filename=filename, content_type="application/pdf"
+        )
 
         # 4) Upload to S3
         async with semaphore:
@@ -290,7 +280,9 @@ async def uploadsummarytotask(headers, filepath, taskid, session, categoryid):
                     logging.info(f"Upload successful for Task {taskid}.")
                     return True
                 else:
-                    logging.info(f"Error Uploading File for Task {taskid}: {upload_response.status} {await upload_response.text()}")
+                    logging.info(
+                        f"Error Uploading File for Task {taskid}: {upload_response.status} {await upload_response.text()}"
+                    )
                     return False
 
     except Exception as e:
@@ -380,25 +372,31 @@ async def createtask(headers, buildingid, session, date_label):
         return None
 
 # -------------------- summary helpers --------------------
-async def add_summary_page(summary_data, summary_writer, summary_file_path, buildingname, countbuilding, date_label):
-    """Generate and append summary page(s) to the active summary writer, then persist to file."""
+async def add_summary_page(summary_data, summary_writer, buildingname, countbuilding, date_label):
+    """Generate and append summary page(s) to the active summary writer.
+
+    Returns the full summary PDF bytes after appending the generated page(s).
+    """
     try:
-        summary_page_buffer = await generateN1notice.create_summary_page(summary_data, buildingname, countbuilding, date_label)
+        summary_page_buffer = await generateN1notice.create_summary_page(
+            summary_data, buildingname, countbuilding, date_label
+        )
         summary_pdf = PdfReader(summary_page_buffer)
         for page in summary_pdf.pages:
             summary_writer.add_page(page)
 
-        with open(summary_file_path, 'wb') as temp_file:
-            summary_writer.write(temp_file)
-
-        logging.info(f"Summary pages added to {summary_file_path}.")
+        buffer = io.BytesIO()
+        summary_writer.write(buffer)
+        buffer.seek(0)
+        return buffer.getvalue()
     except Exception as e:
         logging.error(f"Error adding summary pages: {e}")
+        return b""
 
-async def addtosummary(filepath, summary_writer):
+async def addtosummary(file_bytes, summary_writer):
     """Append a lease PDF's pages into the in-memory summary."""
     try:
-        reader = PdfReader(filepath)
+        reader = PdfReader(io.BytesIO(file_bytes))
         for page in reader.pages:
             summary_writer.add_page(page)
         return True
@@ -445,7 +443,7 @@ async def process_building(
     summary_data = []
     countbuilding = 0
     current_summary_size = 0
-    summary_paths = []
+    summary_parts = []  # list of (filename, bytes)
     size_limit = 19 * 1024 * 1024  # ~19MB
 
     # Per-lease processing -- concurrently generate & upload
@@ -466,8 +464,8 @@ async def process_building(
         leaseincreaseinfo = lease["increasenotice"]
 
         # Generate individual N1
-        filepath = await generateN1files(leaseid, leaseincreaseinfo)
-        if not filepath:
+        filename, file_bytes = await generateN1files(leaseid, leaseincreaseinfo)
+        if not file_bytes:
             logging.error(f"Failed N1 generation for {leaseid}")
             return None
 
@@ -477,10 +475,10 @@ async def process_building(
             logging.error("No category id available for lease uploads.")
         else:
             confirmlease = await uploadN1filestolease(
-                headers, filepath, leaseid, session, categoryid
+                headers, filename, file_bytes, leaseid, session, categoryid
             )
 
-        return lease, filepath, confirmlease
+        return lease, file_bytes, confirmlease
 
     tasks = [handle_lease(i, lease) for i, lease in enumerate(data["lease_info"], 1)]
     results = await asyncio.gather(*tasks)
@@ -490,14 +488,10 @@ async def process_building(
         if not res:
             continue
 
-        lease, filepath, confirmlease = res
+        lease, file_bytes, confirmlease = res
 
         # Determine size of this lease PDF
-        try:
-            file_stat = await aiofiles.os.stat(filepath)
-            lease_size = file_stat.st_size
-        except Exception:
-            lease_size = 0
+        lease_size = len(file_bytes or b"")
 
         # If adding this lease would exceed the limit, flush current summary to disk
         if (
@@ -506,23 +500,19 @@ async def process_building(
         ):
             summary_buffer = io.BytesIO()
             summary_writer.write(summary_buffer)
-            part_path = os.path.join(
-                "/tmp", f"Notices for {buildingname} {datelabel} Part {summary_index}.pdf"
+            part_filename = (
+                f"Notices for {buildingname} {datelabel} Part {summary_index}.pdf"
             )
+            part_bytes = summary_buffer.getvalue()
+            part_path = os.path.join("/tmp", part_filename)
             async with aiofiles.open(part_path, "wb") as f:
-                await f.write(summary_buffer.getvalue())
-            summary_paths.append(part_path)
+                await f.write(part_bytes)
+            summary_parts.append((part_filename, part_bytes))
             summary_index += 1
             summary_writer = PdfWriter()
             current_summary_size = 0
 
-        ok = await addtosummary(filepath, summary_writer)
-
-        if ok and confirmlease:
-            try:
-                await aiofiles.os.remove(filepath)
-            except Exception as e:
-                logging.error(f"Cleanup failed for lease file {filepath}: {e}")
+        ok = await addtosummary(file_bytes, summary_writer)
 
         if ok:
             current_summary_size += lease_size
@@ -533,32 +523,34 @@ async def process_building(
 
     # Finalize & upload building summary (if any non-ignored leases and not ignoring building)
     if summary_data and data.get("ignorebuilding") != "Y" and taskid:
-        summary_file_path = os.path.join(
-            "/tmp", f"Notices for {buildingname} {datelabel} Part {summary_index}.pdf"
+        part_filename = (
+            f"Notices for {buildingname} {datelabel} Part {summary_index}.pdf"
         )
 
-        await add_summary_page(
+        summary_bytes = await add_summary_page(
             summary_data,
             summary_writer,
-            summary_file_path,
             buildingname,
             countbuilding,
             datelabel,
         )
 
-        summary_paths.append(summary_file_path)
+        part_path = os.path.join("/tmp", part_filename)
+        async with aiofiles.open(part_path, "wb") as f:
+            await f.write(summary_bytes)
+        summary_parts.append((part_filename, summary_bytes))
 
-        for path in summary_paths:
+        for fname, bytes_data in summary_parts:
             ok_summary = await uploadsummarytotask(
-                headers, path, taskid, session, categoryid
+                headers, fname, bytes_data, taskid, session, categoryid
             )
             if ok_summary:
                 logging.info(
-                    f"Summary for {buildingname} uploaded to task: {path}."
+                    f"Summary for {buildingname} uploaded to task: {fname}."
                 )
             else:
                 logging.error(
-                    f"Summary upload failed for {buildingname}: {path}."
+                    f"Summary upload failed for {buildingname}: {fname}."
                 )
     else:
         if data.get("ignorebuilding") == "Y":
