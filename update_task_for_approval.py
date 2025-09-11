@@ -83,8 +83,10 @@ async def _put_task_message(session: aiohttp.ClientSession, task_id: int, header
 async def _get_latest_history_id(session: aiohttp.ClientSession, task_id: int, headers: dict) -> Optional[int]:
     # History is under /v1/tasks
     url_hist = f"{BASE_API}/{TASKS_RESOURCE}/{task_id}/history"
+    logging.info(f"History ID Def {task_id}, {url_hist}")
     async with session.get(url_hist, headers=headers) as r_hist:
         body = await r_hist.text()
+        logging.info(f"History ID Def {body}")
         if r_hist.status != 200:
             logging.error(f"History GET failed: {r_hist.status} {body[:500]}")
             return None
@@ -356,12 +358,14 @@ async def update_task(
 
         async with aiohttp.ClientSession(timeout=HTTP_TIMEOUT) as session:
             # 1) Create/Update task history message (todorequests)
+            logging.info("Starting Task Update")
             ok_put = await _put_task_message(session, task_id, headers, title, assigned_to_user_id, taskcatid, msg)
             if not ok_put:
                 return False
 
             # 2) Lock the HISTORY ID *now* (tasks)
             history_id = await _get_latest_history_id(session, task_id, headers)
+            logging.info("Starting Task History ID")
             if not history_id:
                 logging.error("Could not find latest history entry to attach files.")
                 return False
