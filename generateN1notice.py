@@ -3,6 +3,7 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter
 import io
 import datetime
+import logging
 import os
 from pathlib import Path
 import re
