@@ -62,8 +62,8 @@ async def process_task(task_id, task_type, account_id, event_name, account_info)
 
     logging.info(f"Retrieved headers for Task: {task_id}")
 
-    # Retrieve task data from get_tasks.py (assuming get_task_data is synchronous)
-    task_data = get_tasks.get_task_data(task_id, headers)
+    # Retrieve task data from get_tasks.py
+    task_data = await get_tasks.get_task_data(task_id, headers)
 
     if not task_data:
         logging.error(f"Task data not found for TaskId: {task_id}")
