@@ -89,7 +89,7 @@ async def process_task_in_background(task_id, task_type, account_id, event_name,
 @app.route('/webhook', methods=['POST'])
 async def handle_webhook():
     logging.info("Webhook received")
-    print(request)
+    logging.debug("Request received: method=%s path=%s", request.method, request.path)
     try:
         # Log request headers and body
         signature = request.headers.get('buildium-webhook-signature')
