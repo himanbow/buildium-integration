@@ -647,9 +647,16 @@ async def process(headers, increaseinfo, accountid):
                 if datelabel:
                     break
 
-            await asyncio.gather(
-                *(
-                    process_building(
+            # Process buildings sequentially to avoid overwhelming the
+            # Buildium API with task creation bursts.  The per-request
+            # rate limiters still apply, but spacing out buildings helps
+            # keep task creation smooth.
+            for buildingdata in increaseinfo:
+                for buildingid, data in buildingdata.items():
+                    if not data.get("lease_info"):
+                        continue
+
+                    await process_building(
                         buildingid,
                         data,
                         headers,
@@ -659,11 +666,9 @@ async def process(headers, increaseinfo, accountid):
                         counter,
                         count_lock,
                     )
-                    for buildingdata in increaseinfo
-                    for buildingid, data in buildingdata.items()
-                    if data.get("lease_info")
-                )
-            )
+
+                    # Small pause between buildings to further throttle task creation
+                    await asyncio.sleep(0.25)
     except Exception as e:
         logging.error(f"Error processing leases data: {e}")
 
