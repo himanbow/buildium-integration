@@ -6,7 +6,6 @@ import time
 import task_processor
 from google.cloud import secretmanager
 from google.cloud import firestore
-import asyncio
 import logging
 
 app = Quart(__name__)
@@ -124,16 +123,14 @@ async def handle_webhook():
         event_name = payload.get('EventName')
         logging.info(f"Task ID: {task_id}, Task Type: {task_type}, Event Name: {event_name}")
 
-        # Process the task before returning so the container isn't killed
-        # before long running uploads complete. Running this work in the
-        # background caused Cloud Run to terminate the instance immediately
-        # after responding, which cancelled the file upload flow in
-        # ``update_task_for_approval``. By awaiting the processing here we
-        # keep the request alive until all network calls finish.
-        await process_task_in_background(
-            task_id, task_type, account_id, event_name, account_info
+        # Kick off task processing in the background so the webhook can
+        # respond immediately. ``app.add_background_task`` schedules the
+        # work on the event loop without waiting for it to finish.
+        app.add_background_task(
+            process_task_in_background,
+            task_id, task_type, account_id, event_name, account_info,
         )
-        logging.info("Task processing finished")
+        logging.info("Task processing started in background")
 
         return jsonify({'status': 'success'}), 200
     except Exception as e:
