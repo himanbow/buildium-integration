@@ -124,9 +124,16 @@ async def handle_webhook():
         event_name = payload.get('EventName')
         logging.info(f"Task ID: {task_id}, Task Type: {task_type}, Event Name: {event_name}")
 
-        # Pass account_info to process_task_in_background
-        asyncio.create_task(process_task_in_background(task_id, task_type, account_id, event_name, account_info))
-        logging.info("Task submitted to background")
+        # Process the task before returning so the container isn't killed
+        # before long running uploads complete. Running this work in the
+        # background caused Cloud Run to terminate the instance immediately
+        # after responding, which cancelled the file upload flow in
+        # ``update_task_for_approval``. By awaiting the processing here we
+        # keep the request alive until all network calls finish.
+        await process_task_in_background(
+            task_id, task_type, account_id, event_name, account_info
+        )
+        logging.info("Task processing finished")
 
         return jsonify({'status': 'success'}), 200
     except Exception as e:
