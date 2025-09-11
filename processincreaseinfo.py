@@ -182,7 +182,7 @@ async def uploadN1filestolease(headers, filename, file_bytes, leaseid, session, 
     try:
         # 1) Get presign
         url = "https://api.buildium.com/v1/files/uploadrequests"
-        body = {
+        presign_body = {
             "EntityType": "Lease",
             "EntityId": leaseid,
             "FileName": filename,  # must be just the name
@@ -190,7 +190,7 @@ async def uploadN1filestolease(headers, filename, file_bytes, leaseid, session, 
             "CategoryId": categoryid,
         }
         async with semaphore, throttle:
-            async with session.post(url, json=body, headers=headers) as response:
+            async with session.post(url, json=presign_body, headers=headers) as response:
                 if response.status != 201:
                     logging.info(
                         f"Error while submitting lease file metadata: {response.status} {await response.text()}"
@@ -208,14 +208,43 @@ async def uploadN1filestolease(headers, filename, file_bytes, leaseid, session, 
         # 3) Upload to S3
         async with semaphore, throttle:
             async with session.post(bucket_url, data=form_data) as upload_response:
+                resp_text = await upload_response.text()
                 if upload_response.status == 204:
                     logging.info(f"Upload of Notice for {leaseid} successful.")
                     return True
-                else:
-                    logging.info(
-                        f"Error Uploading Notice for {leaseid}: {upload_response.status} {await upload_response.text()}"
+                if upload_response.status == 403 and "Invalid according to Policy: Policy expired" in resp_text:
+                    logging.warning(
+                        f"Policy expired for lease {leaseid} upload; requesting new presign and retrying."
                     )
-                    return False
+                    # Re-request presigned data
+                    async with semaphore, throttle:
+                        async with session.post(url, json=presign_body, headers=headers) as response:
+                            if response.status != 201:
+                                logging.info(
+                                    f"Retry presign failed for lease {leaseid}: {response.status} {await response.text()}"
+                                )
+                                return False
+                            payload = await response.json()
+                            form_data_retry, bucket_url_retry = await amazondatalease(payload)
+                    form_data_retry.add_field(
+                        "file", file_bytes, filename=filename, content_type="application/pdf"
+                    )
+                    async with semaphore, throttle:
+                        async with session.post(bucket_url_retry, data=form_data_retry) as retry_response:
+                            retry_body = await retry_response.text()
+                            if retry_response.status == 204:
+                                logging.info(
+                                    f"Retry upload of Notice for {leaseid} succeeded."
+                                )
+                                return True
+                            logging.info(
+                                f"Retry upload failed for {leaseid}: {retry_response.status} {retry_body}"
+                            )
+                            return False
+                logging.info(
+                    f"Error Uploading Notice for {leaseid}: {upload_response.status} {resp_text}"
+                )
+                return False
 
     except Exception as e:
         logging.info(
@@ -256,9 +285,9 @@ async def uploadsummarytotask(headers, filename, file_bytes, taskid, session, ca
         url = (
             f"https://api.buildium.com/v1/tasks/{taskid}/history/{taskhistoryid}/files/uploadrequests"
         )
-        body = {"FileName": filename}
+        presign_body = {"FileName": filename}
         async with semaphore, throttle:
-            async with session.post(url, json=body, headers=headers) as response:
+            async with session.post(url, json=presign_body, headers=headers) as response:
                 if response.status != 201:
                     logging.info(
                         f"Error while submitting task file metadata: {response.status} {await response.text()}"
@@ -276,14 +305,42 @@ async def uploadsummarytotask(headers, filename, file_bytes, taskid, session, ca
         # 4) Upload to S3
         async with semaphore, throttle:
             async with session.post(bucket_url, data=form_data) as upload_response:
+                resp_text = await upload_response.text()
                 if upload_response.status == 204:
                     logging.info(f"Upload successful for Task {taskid}.")
                     return True
-                else:
-                    logging.info(
-                        f"Error Uploading File for Task {taskid}: {upload_response.status} {await upload_response.text()}"
+                if upload_response.status == 403 and "Invalid according to Policy: Policy expired" in resp_text:
+                    logging.warning(
+                        f"Policy expired for task {taskid} upload; requesting new presign and retrying."
                     )
-                    return False
+                    async with semaphore, throttle:
+                        async with session.post(url, json=presign_body, headers=headers) as response:
+                            if response.status != 201:
+                                logging.info(
+                                    f"Retry presign failed for task {taskid}: {response.status} {await response.text()}"
+                                )
+                                return False
+                            payload = await response.json()
+                            form_data_retry, bucket_url_retry = await amazondatatask(payload)
+                    form_data_retry.add_field(
+                        "file", file_bytes, filename=filename, content_type="application/pdf"
+                    )
+                    async with semaphore, throttle:
+                        async with session.post(bucket_url_retry, data=form_data_retry) as retry_response:
+                            retry_body = await retry_response.text()
+                            if retry_response.status == 204:
+                                logging.info(
+                                    f"Retry upload of Summary for task {taskid} succeeded."
+                                )
+                                return True
+                            logging.info(
+                                f"Retry upload failed for task {taskid}: {retry_response.status} {retry_body}"
+                            )
+                            return False
+                logging.info(
+                    f"Error Uploading File for Task {taskid}: {upload_response.status} {resp_text}"
+                )
+                return False
 
     except Exception as e:
         logging.error(f"Error Uploading Summary to task: {e}")
