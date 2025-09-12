@@ -6,6 +6,17 @@ steps:
     args: [ 'push', 'gcr.io/$PROJECT_ID/buildium-integration' ]
 
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: bash
+    args:
+      - '-c'
+      - |
+        gcloud tasks queues describe buildium-webhook --location=us-central1 || \
+        gcloud tasks queues create buildium-webhook --location=us-central1
+        gcloud projects add-iam-policy-binding $PROJECT_ID \
+          --member=serviceAccount:$PROJECT_ID@appspot.gserviceaccount.com \
+          --role=roles/cloudtasks.enqueuer
+
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     entrypoint: gcloud
     args: [
       'run', 'deploy', 'buildium-integration',
