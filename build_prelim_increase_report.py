@@ -289,8 +289,14 @@ def build_increase_report_pdf(
         for b, rs in by_building.items():
             included = [x for x in rs if x.get("ignored") != "Y"]
             ignored = [x for x in rs if x.get("ignored") == "Y"]
-            total_included = sum(_num(x.get("guidelineincrease")) + _num(x.get("agiincrease")) for x in included)
-            total_ignored = sum(_num(x.get("guidelineincrease")) + _num(x.get("agiincrease")) for x in ignored)
+            total_included = sum(
+                _num(x.get("guidelineincrease")) + _num(x.get("agiincrease"))
+                for x in included
+            )
+            total_ignored = sum(
+                _num(x.get("guidelineincrease")) + _num(x.get("agiincrease"))
+                for x in ignored
+            )
             totals_by_building[b] = {
                 "count": len(included),
                 "total_inc": _fmt_money(total_included),
@@ -298,6 +304,112 @@ def build_increase_report_pdf(
                 "ignored_total_inc": _fmt_money(total_ignored),
             }
         logging.info("Computed Totals")
+
+    # ---------- summary page ----------
+    included_all = [x for x in rows if x.get("ignored") != "Y"]
+    ignored_all = [x for x in rows if x.get("ignored") == "Y"]
+    overall_totals = {
+        "count": len(included_all),
+        "total_inc": _fmt_money(
+            sum(
+                _num(x.get("guidelineincrease")) + _num(x.get("agiincrease"))
+                for x in included_all
+            )
+        ),
+        "ignored_count": len(ignored_all),
+        "ignored_total_inc": _fmt_money(
+            sum(
+                _num(x.get("guidelineincrease")) + _num(x.get("agiincrease"))
+                for x in ignored_all
+            )
+        ),
+    }
+
+    story.append(
+        _building_header_with_logo(
+            "All Buildings", run_date, effective_date, guideline_pct, styles, logo_source
+        )
+    )
+    story.append(Spacer(1, 0.18 * inch))
+
+    totals_col_widths = [w * inch for w in [2.0, 2.6, 1.8, 2.9]]  # ≈ 9.3"
+
+    tdata = [
+        [
+            "Increases (not ignored)",
+            "Total Increase (not ignored)",
+            "Ignored Count",
+            "Total Ignored Increase",
+        ],
+        [
+            str(overall_totals["count"]),
+            overall_totals["total_inc"],
+            str(overall_totals["ignored_count"]),
+            overall_totals["ignored_total_inc"],
+        ],
+    ]
+    tt = Table(tdata, colWidths=totals_col_widths)
+    tt.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                ("FONTSIZE", (0, 0), (-1, -1), 9),
+                (
+                    "ROWBACKGROUNDS",
+                    (0, 1),
+                    (-1, -1),
+                    [colors.HexColor("#EAF2FB"), colors.whitesmoke],
+                ),
+            ]
+        )
+    )
+    story.append(tt)
+    story.append(Spacer(1, 0.22 * inch))
+
+    building_rows = [
+        [
+            "Building",
+            "Increases (not ignored)",
+            "Total Increase (not ignored)",
+            "Ignored Count",
+            "Total Ignored Increase",
+        ]
+    ]
+    for b, t in totals_by_building.items():
+        building_rows.append(
+            [
+                b,
+                str(t.get("count", "")),
+                t.get("total_inc", ""),
+                str(t.get("ignored_count", "")),
+                t.get("ignored_total_inc", ""),
+            ]
+        )
+
+    building_col_widths = [w * inch for w in [2.5, 1.5, 2.0, 1.5, 1.8]]
+    bt = Table(building_rows, colWidths=building_col_widths)
+    bt.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+                ("ALIGN", (0, 0), (0, -1), "LEFT"),
+                ("ALIGN", (1, 0), (-1, -1), "CENTER"),
+                ("FONTSIZE", (0, 0), (-1, -1), 9),
+                (
+                    "ROWBACKGROUNDS",
+                    (0, 1),
+                    (-1, -1),
+                    [colors.HexColor("#EAF2FB"), colors.whitesmoke],
+                ),
+            ]
+        )
+    )
+    story.append(bt)
+    story.append(Spacer(1, 0.22 * inch))
+    story.append(PageBreak())
 
     # Build pages
     for idx, (building, rs) in enumerate(by_building.items()):
