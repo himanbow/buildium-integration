@@ -18,10 +18,12 @@ steps:
 
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     entrypoint: gcloud
+    # WEB_CONCURRENCY controls how many Uvicorn worker processes are started.
     args: [
       'run', 'deploy', 'buildium-integration',
       '--image', 'gcr.io/$PROJECT_ID/buildium-integration',
       '--region', 'us-central1',
       '--platform', 'managed',
-      '--allow-unauthenticated'
+      '--allow-unauthenticated',
+      '--set-env-vars', 'WEB_CONCURRENCY=1'
     ]
