@@ -98,12 +98,16 @@ def generate_increases(leases_by_building, increasedate, guidelinerate):
             logging.info(f"Processing Lease ID: {lease['leaseid']} - Unit: {lease['unitnumber']}")
             percentage = lease['total_increase_percentage']
             agipercentage = lease['calculationpercentage']
-        
-            if lease['agiinfo'] != []:
+            yearcheck = None
+
+            if lease.get('agi') is not None:
                 yearcheck = lease['agiinfo'][0]['date_of_first_increase']
                 yearcheck = yearcheck + relativedelta(years=1)
                 if increasedate > yearcheck:
                     percentage += 0.25
+            else:
+                percentage = guidelinerate
+                agipercentage = guidelinerate
             agirent = None
             agiincrease = None
             agicheck = False
@@ -132,10 +136,8 @@ def generate_increases(leases_by_building, increasedate, guidelinerate):
             if lease['eligible'] == False:
                 ignored = "Y"
 
-            if lease['agiinfo'] != []:
-            
-                if increasedate > yearcheck:
-                    agipercentage -= 0.25
+            if lease.get('agi') is not None and yearcheck and increasedate > yearcheck:
+                agipercentage -= 0.25
             
             # Prepare the summary data for this lease, formatted as currency
             lease_info = {
