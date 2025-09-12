@@ -9,8 +9,8 @@ import asyncio
 import os
 from aiolimiter import AsyncLimiter
 
-MAX_CONCURRENT_REQUESTS = int(os.getenv("BUILDIUM_MAX_CONCURRENT_REQUESTS", "10"))
-TOKENS_PER_SECOND = float(os.getenv("BUILDIUM_REQS_PER_SEC", "10"))
+MAX_CONCURRENT_REQUESTS = int(os.getenv("BUILDIUM_MAX_CONCURRENT_REQUESTS", "9"))
+TOKENS_PER_SECOND = float(os.getenv("BUILDIUM_REQS_PER_SEC", "9"))
 
 semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
 throttle = AsyncLimiter(TOKENS_PER_SECOND, time_period=1)
