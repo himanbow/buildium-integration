@@ -592,7 +592,12 @@ async def process_building(
             part_path = os.path.join("/tmp", part_filename)
             async with aiofiles.open(part_path, "wb") as f:
                 await f.write(part_bytes)
-            summary_parts.append((part_filename, part_bytes))
+            if await aiofiles.os.path.exists(part_path):
+                summary_parts.append((part_filename, part_bytes))
+            else:
+                logging.error(
+                    f"Failed to verify summary part {part_filename} at {part_path}"
+                )
             summary_index += 1
             summary_writer = PdfWriter()
             current_summary_size = 0
@@ -624,20 +629,37 @@ async def process_building(
         part_path = os.path.join("/tmp", part_filename)
         async with aiofiles.open(part_path, "wb") as f:
             await f.write(summary_bytes)
-        summary_parts.append((part_filename, summary_bytes))
-
-        for fname, bytes_data in summary_parts:
-            ok_summary = await uploadsummarytotask(
-                headers, fname, bytes_data, taskid, session, categoryid
+        if await aiofiles.os.path.exists(part_path):
+            summary_parts.append((part_filename, summary_bytes))
+        else:
+            logging.error(
+                f"Failed to verify summary file {part_filename} at {part_path}"
             )
-            if ok_summary:
-                logging.info(
-                    f"Summary for {buildingname} uploaded to task: {fname}."
+
+        total_parts = len(summary_parts)
+        logging.info(
+            f"[{buildingid}] Prepared {total_parts} summary part(s) for upload"
+        )
+
+        for idx, (fname, bytes_data) in enumerate(summary_parts, 1):
+            for attempt in range(1, 3):
+                ok_summary = await uploadsummarytotask(
+                    headers, fname, bytes_data, taskid, session, categoryid
                 )
-            else:
-                logging.error(
-                    f"Summary upload failed for {buildingname}: {fname}."
-                )
+                if ok_summary:
+                    logging.info(
+                        f"[{buildingid}] Uploaded summary part {idx}/{total_parts}: {fname} (attempt {attempt})"
+                    )
+                    break
+                if attempt < 2:
+                    logging.warning(
+                        f"[{buildingid}] Upload failed for part {idx}/{total_parts}: {fname}; retrying..."
+                    )
+                    await asyncio.sleep(1)
+                else:
+                    logging.error(
+                        f"[{buildingid}] Summary upload failed for part {idx}/{total_parts}: {fname}"
+                    )
     else:
         if data.get("ignorebuilding") == "Y":
             logging.info(
