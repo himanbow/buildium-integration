@@ -1,4 +1,3 @@
-import aiohttp
 import asyncio
 from datetime import datetime, timedelta
 from collections import defaultdict
@@ -356,8 +355,8 @@ async def process_single_lease(session, lease, headers, increase_effective_date,
         logging.error(f"Error processing lease {lease['Id']}: {e}")
         return None
 
-async def gather_leases_for_increase(headers, guideline_increase):
-    """Main function to gather and process leases asynchronously."""
+async def gather_leases_for_increase(session, headers, guideline_increase):
+    """Main function to gather and process leases asynchronously using a shared session."""
     today = datetime.today()
     buildingidnotetest = 0
     building_agi_info = {}
@@ -366,31 +365,39 @@ async def gather_leases_for_increase(headers, guideline_increase):
     increase_effective_date = effective_date
     guideline_increase = float(guideline_increase)
 
-    async with aiohttp.ClientSession() as session:
-        leases = await get_leases(session, headers, increase_effective_date)
-        logging.info("Leases Fetched")
+    leases = await get_leases(session, headers, increase_effective_date)
+    logging.info("Leases Fetched")
 
-        leases_by_building = defaultdict(list)
+    leases_by_building = defaultdict(list)
 
-        if leases:
-            tasks = []
-            for lease in leases:
-                building_id = lease['PropertyId']
-                if building_id != buildingidnotetest:
-                    building_notes = await get_building_notes(session, building_id, headers)
-                    building_agi_info = parse_building_agi_notes(building_notes)
-                    buildingidnotetest = building_id
-                
-                tasks.append(process_single_lease(session, lease, headers, increase_effective_date, guideline_increase, building_agi_info))
-            
-            lease_results = await asyncio.gather(*tasks)
+    if leases:
+        tasks = []
+        for lease in leases:
+            building_id = lease['PropertyId']
+            if building_id != buildingidnotetest:
+                building_notes = await get_building_notes(session, building_id, headers)
+                building_agi_info = parse_building_agi_notes(building_notes)
+                buildingidnotetest = building_id
 
-            for result in lease_results:
-                if result:
-                    leases_by_building[result['buildingid']].append(result)
-            leases_by_building = {k: leases_by_building[k] for k in sorted(leases_by_building, reverse=True)}
+            tasks.append(
+                process_single_lease(
+                    session,
+                    lease,
+                    headers,
+                    increase_effective_date,
+                    guideline_increase,
+                    building_agi_info,
+                )
+            )
 
-        return leases_by_building, increase_effective_date
+        lease_results = await asyncio.gather(*tasks)
+
+        for result in lease_results:
+            if result:
+                leases_by_building[result['buildingid']].append(result)
+        leases_by_building = {k: leases_by_building[k] for k in sorted(leases_by_building, reverse=True)}
+
+    return leases_by_building, increase_effective_date
 
 
 # # recurringchargesinfo = [{"Id":295957,"TransactionType":"Charge","IsExpired":False,"RentId":122220,"OffsettingGLAccountId":None,"Lines":[{"GLAccountId":3,"Amount":1633.99}],"Amount":1633.99,"Memo":"Rent","NextOccurrenceDate":"2024-11-01","PostDaysInAdvance":11,"Frequency":"Monthly","Duration":"UntilEndOfTerm"},{"Id":295958,"TransactionType":"Charge","IsExpired":False,"RentId":None,"OffsettingGLAccountId":None,"Lines":[{"GLAccountId":144077,"Amount":69.11}],"Amount":69.11,"Memo":"Parking","NextOccurrenceDate":"2024-11-01","PostDaysInAdvance":11,"Frequency":"Monthly","Duration":"UntilEndOfTerm"},{"Id":295959,"TransactionType":"Charge","IsExpired":False,"RentId":None,"OffsettingGLAccountId":None,"Lines":[{"GLAccountId":144073,"Amount":57.81}],"Amount":57.81,"Memo":"Garage Parking","NextOccurrenceDate":"2024-11-01","PostDaysInAdvance":11,"Frequency":"Monthly","Duration":"UntilEndOfTerm"}]

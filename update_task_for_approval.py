@@ -420,6 +420,7 @@ async def _do_post_put_flow(
 # Main entry
 # -----------------------------------------------------------------------------
 async def update_task(
+    session: aiohttp.ClientSession,
     task_data: dict,
     increase_summary: dict,
     increase_effective_date,
@@ -506,35 +507,34 @@ async def update_task(
                 '"Increase Notices" with the task category set to "System Tasks".'
             )
 
-        async with aiohttp.ClientSession(timeout=HTTP_TIMEOUT) as session:
-            # 1) Create/Update task history message (todorequests)
-            logging.info("Starting Task Update")
-            ok_put = await _put_task_message(session, task_id, headers, title, assigned_to_user_id, taskcatid, msg)
-            if not ok_put:
-                return False
+        # 1) Create/Update task history message (todorequests)
+        logging.info("Starting Task Update")
+        ok_put = await _put_task_message(session, task_id, headers, title, assigned_to_user_id, taskcatid, msg)
+        if not ok_put:
+            return False
 
-            # 2–4) Shield the rest of the flow so shutdowns can't silently cancel it
-            try:
-                logging.info("Entering shielded post-PUT section...")
-                ok_all = await asyncio.shield(
-                    _do_post_put_flow(
-                        session=session,
-                        task_id=task_id,
-                        headers=headers,
-                        part_names_and_bytes=part_names_and_bytes,
-                        json_filename=json_filename,
-                        json_bytes=json_bytes,
-                        poll_finalize=poll_finalize,
-                    )
+        # 2–4) Shield the rest of the flow so shutdowns can't silently cancel it
+        try:
+            logging.info("Entering shielded post-PUT section...")
+            ok_all = await asyncio.shield(
+                _do_post_put_flow(
+                    session=session,
+                    task_id=task_id,
+                    headers=headers,
+                    part_names_and_bytes=part_names_and_bytes,
+                    json_filename=json_filename,
+                    json_bytes=json_bytes,
+                    poll_finalize=poll_finalize,
                 )
-                if not ok_all:
-                    return False
-            except asyncio.CancelledError:
-                logging.error("update_task cancelled during post-PUT work (server shutdown or SIGTERM).")
-                raise
+            )
+            if not ok_all:
+                return False
+        except asyncio.CancelledError:
+            logging.error("update_task cancelled during post-PUT work (server shutdown or SIGTERM).")
+            raise
 
-            logging.info("Task update completed successfully.")
-            return True
+        logging.info("Task update completed successfully.")
+        return True
 
     except asyncio.CancelledError:
         logging.error("update_task was cancelled (likely app shutdown).")
