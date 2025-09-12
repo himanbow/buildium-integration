@@ -3,6 +3,7 @@ import logging
 import asyncio
 import os
 import io
+import random
 import generateN1notice
 from PyPDF2 import PdfReader, PdfWriter
 import aiofiles
@@ -54,6 +55,29 @@ async def fetch_data(session, url, headers, method: str = "GET"):
     except Exception as e:
         logging.info(f"Error fetching data from {url}: {e}")
         return {}
+
+# -------------------- POST with retry --------------------
+async def post_with_retry(session, url, *, headers=None, json=None, data=None, max_attempts: int = 5):
+    """POST with basic 429 retry, exponential backoff, and jitter."""
+    delay = 2
+    for attempt in range(max_attempts):
+        async with semaphore, throttle:
+            async with session.post(url, headers=headers, json=json, data=data) as response:
+                status = response.status
+                retry_after_hdr = response.headers.get("Retry-After")
+                if status != 429:
+                    try:
+                        body = await response.json()
+                    except Exception:
+                        body = await response.text()
+                    return status, body
+        try:
+            wait = float(retry_after_hdr) if retry_after_hdr is not None else delay
+        except ValueError:
+            wait = delay
+        await asyncio.sleep(wait + random.uniform(0, 0.5))
+        delay *= 2
+    return None, None
 
 # -------------------- categories --------------------
 async def category(headers, session, date_label: str):
@@ -189,16 +213,17 @@ async def uploadN1filestolease(headers, filename, file_bytes, leaseid, session, 
             "Title": filename,
             "CategoryId": categoryid,
         }
-        async with semaphore, throttle:
-            async with session.post(url, json=presign_body, headers=headers) as response:
-                if response.status != 201:
-                    logging.info(
-                        f"Error while submitting lease file metadata: {response.status} {await response.text()}"
-                    )
-                    return False
+        status, body = await post_with_retry(
+            session, url, headers=headers, json=presign_body
+        )
+        if status != 201:
+            logging.info(
+                f"Error while submitting lease file metadata: {status} {body}"
+            )
+            return False
 
-                payload = await response.json()
-                form_data, bucket_url = await amazondatalease(payload)
+        payload = body
+        form_data, bucket_url = await amazondatalease(payload)
 
         # 2) Add PDF bytes as LAST field
         form_data.add_field(
@@ -217,15 +242,16 @@ async def uploadN1filestolease(headers, filename, file_bytes, leaseid, session, 
                         f"Policy expired for lease {leaseid} upload; requesting new presign and retrying."
                     )
                     # Re-request presigned data
-                    async with semaphore, throttle:
-                        async with session.post(url, json=presign_body, headers=headers) as response:
-                            if response.status != 201:
-                                logging.info(
-                                    f"Retry presign failed for lease {leaseid}: {response.status} {await response.text()}"
-                                )
-                                return False
-                            payload = await response.json()
-                            form_data_retry, bucket_url_retry = await amazondatalease(payload)
+                    status, body = await post_with_retry(
+                        session, url, headers=headers, json=presign_body
+                    )
+                    if status != 201:
+                        logging.info(
+                            f"Retry presign failed for lease {leaseid}: {status} {body}"
+                        )
+                        return False
+                    payload = body
+                    form_data_retry, bucket_url_retry = await amazondatalease(payload)
                     form_data_retry.add_field(
                         "file", file_bytes, filename=filename, content_type="application/pdf"
                     )
@@ -286,16 +312,17 @@ async def uploadsummarytotask(headers, filename, file_bytes, taskid, session, ca
             f"https://api.buildium.com/v1/tasks/{taskid}/history/{taskhistoryid}/files/uploadrequests"
         )
         presign_body = {"FileName": filename}
-        async with semaphore, throttle:
-            async with session.post(url, json=presign_body, headers=headers) as response:
-                if response.status != 201:
-                    logging.info(
-                        f"Error while submitting task file metadata: {response.status} {await response.text()}"
-                    )
-                    return False
+        status, body = await post_with_retry(
+            session, url, headers=headers, json=presign_body
+        )
+        if status != 201:
+            logging.info(
+                f"Error while submitting task file metadata: {status} {body}"
+            )
+            return False
 
-                payload = await response.json()
-                form_data, bucket_url = await amazondatatask(payload)
+        payload = body
+        form_data, bucket_url = await amazondatatask(payload)
 
         # 3) Add PDF bytes LAST
         form_data.add_field(
@@ -313,15 +340,16 @@ async def uploadsummarytotask(headers, filename, file_bytes, taskid, session, ca
                     logging.warning(
                         f"Policy expired for task {taskid} upload; requesting new presign and retrying."
                     )
-                    async with semaphore, throttle:
-                        async with session.post(url, json=presign_body, headers=headers) as response:
-                            if response.status != 201:
-                                logging.info(
-                                    f"Retry presign failed for task {taskid}: {response.status} {await response.text()}"
-                                )
-                                return False
-                            payload = await response.json()
-                            form_data_retry, bucket_url_retry = await amazondatatask(payload)
+                    status, body = await post_with_retry(
+                        session, url, headers=headers, json=presign_body
+                    )
+                    if status != 201:
+                        logging.info(
+                            f"Retry presign failed for task {taskid}: {status} {body}"
+                        )
+                        return False
+                    payload = body
+                    form_data_retry, bucket_url_retry = await amazondatatask(payload)
                     form_data_retry.add_field(
                         "file", file_bytes, filename=filename, content_type="application/pdf"
                     )
