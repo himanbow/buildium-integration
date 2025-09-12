@@ -7,6 +7,7 @@ import task_processor
 from google.cloud import secretmanager
 from google.cloud import firestore
 from google.cloud import tasks_v2
+from google.api_core.exceptions import NotFound
 import logging
 import asyncio
 import json
@@ -150,8 +151,20 @@ async def handle_webhook():
             }
         }
 
-        await asyncio.to_thread(tasks_client.create_task, request={'parent': parent, 'task': task})
-        logging.info("Task enqueued to Cloud Tasks")
+        try:
+            await asyncio.to_thread(
+                tasks_client.create_task, request={"parent": parent, "task": task}
+            )
+            logging.info("Task enqueued to Cloud Tasks")
+        except NotFound as e:
+            logging.error(
+                f"Cloud Tasks queue not found: {e}. "
+                "Ensure the queue exists and environment variables are configured correctly."
+            )
+            return (
+                jsonify({"error": "Task queue not found"}),
+                500,
+            )
 
         return jsonify({'status': 'success'}), 200
     except Exception as e:
