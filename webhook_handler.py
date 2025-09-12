@@ -1,3 +1,10 @@
+"""Quart application that validates Buildium webhooks and enqueues tasks.
+
+This module exposes routes for receiving webhook events and for Cloud Tasks to
+dispatch work. Adding clear docstrings here helps future contributors navigate
+the overall flow of the application.
+"""
+
 from quart import Quart, request, jsonify
 import hmac
 import hashlib
@@ -96,6 +103,7 @@ def verify_signature(request_body, signature, timestamp, secret_key):
 
 @app.route('/webhook', methods=['POST'])
 async def handle_webhook():
+    """Validate webhook payload, verify signature, and enqueue task."""
     logging.info("Webhook received")
     logging.debug("Request received: method=%s path=%s", request.method, request.path)
     try:
@@ -173,6 +181,7 @@ async def handle_webhook():
 
 @app.route('/tasks/process', methods=['POST'])
 async def process_task_request():
+    """Handle Cloud Tasks callbacks by delegating work to task_processor."""
     queue_header = request.headers.get('X-Cloud-Tasks-QueueName')
     if queue_header != QUEUE_NAME:
         logging.error(f"Invalid Cloud Tasks queue header: {queue_header}")
@@ -190,6 +199,7 @@ async def process_task_request():
 
 @app.route('/', methods=['GET', 'POST'])
 async def index():
+    """Simple health check endpoint for Cloud Run."""
     return "Buildium Webhook Handler is running!", 200
 
 if __name__ == '__main__':
