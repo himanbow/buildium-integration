@@ -229,7 +229,7 @@ async def index():
 @app.after_serving
 async def close_clients():
     """Close Google Cloud clients when the app stops."""
-    await app.secret_client.close()
+    await app.secret_client.transport.close()
     await app.tasks_client.close()
     await app.db.close()
 
