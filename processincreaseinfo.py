@@ -529,7 +529,7 @@ async def process_building(
     countbuilding = 0
     current_summary_size = 0
     summary_parts = []  # list of (filename, bytes)
-    size_limit = 19 * 1024 * 1024  # ~19MB
+    size_limit = 15 * 1024 * 1024  # ~15MB
 
     # Per-lease processing -- concurrently generate & upload
     total_leases = len(data["lease_info"])
