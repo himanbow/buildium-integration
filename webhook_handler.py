@@ -20,6 +20,7 @@ import asyncio
 import json
 import os
 from functools import lru_cache
+from session_manager import session_manager
 
 app = Quart(__name__)
 
@@ -207,6 +208,12 @@ async def process_task_request():
 async def index():
     """Simple health check endpoint for Cloud Run."""
     return "Buildium Webhook Handler is running!", 200
+
+
+@app.after_serving
+async def shutdown_session_manager():
+    """Ensure all aiohttp sessions are closed when the app stops."""
+    await session_manager.close_all()
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=8080)
