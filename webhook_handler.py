@@ -28,15 +28,17 @@ logging.basicConfig(level=logging.DEBUG, format='%(asctime)s %(levelname)s:%(mes
 logging.getLogger('quart.app').setLevel(logging.DEBUG)
 logging.getLogger('quart.serving').setLevel(logging.DEBUG)
 
-# Initialize Google Cloud clients
-secret_client = SecretManagerServiceAsyncClient()
-tasks_client = tasks_v2.CloudTasksAsyncClient()
-
 PROJECT_ID = os.environ.get("GCP_PROJECT", "buildium-integration-v1")
 QUEUE_LOCATION = os.environ.get("TASK_QUEUE_LOCATION", "us-central1")
 QUEUE_NAME = os.environ.get("TASK_QUEUE_NAME", "Worker")
 
-db = FirestoreAsyncClient(project=PROJECT_ID)
+
+@app.before_serving
+async def create_clients():
+    """Instantiate Google Cloud clients before handling requests."""
+    app.secret_client = SecretManagerServiceAsyncClient()
+    app.tasks_client = tasks_v2.CloudTasksAsyncClient()
+    app.db = FirestoreAsyncClient(project=PROJECT_ID)
 
 _secret_cache = {}
 async def get_secret(secret_name):
@@ -44,7 +46,7 @@ async def get_secret(secret_name):
     if secret_name in _secret_cache:
         return _secret_cache[secret_name]
     name = f"projects/{PROJECT_ID}/secrets/{secret_name}/versions/latest"
-    response = await secret_client.access_secret_version(request={"name": name})
+    response = await app.secret_client.access_secret_version(request={"name": name})
     secret = response.payload.data.decode("UTF-8")
     _secret_cache[secret_name] = secret
     return secret
@@ -57,7 +59,7 @@ async def get_account_info(account_id):
         return _account_info_cache[account_id]
     try:
         logging.info(f"Fetching account info for Account ID: {account_id}")
-        doc_ref = db.collection('buildium_accounts').document(str(account_id))
+        doc_ref = app.db.collection('buildium_accounts').document(str(account_id))
         doc = await doc_ref.get()
         if doc.exists:
             logging.info(f"Account info found for Account ID: {account_id}")
@@ -159,7 +161,7 @@ async def handle_webhook():
         event_name = payload.get('EventName')
         logging.info(f"Task ID: {task_id}, Task Type: {task_type}, Event Name: {event_name}")
 
-        parent = tasks_client.queue_path(PROJECT_ID, QUEUE_LOCATION, QUEUE_NAME)
+        parent = app.tasks_client.queue_path(PROJECT_ID, QUEUE_LOCATION, QUEUE_NAME)
         task_payload = {
             'task_id': task_id,
             'task_type': task_type,
@@ -177,7 +179,7 @@ async def handle_webhook():
             }
         }
         try:
-            await tasks_client.create_task(request={"parent": parent, "task": task})
+            await app.tasks_client.create_task(request={"parent": parent, "task": task})
             logging.info("Task enqueued to Cloud Tasks")
         except NotFound as e:
             logging.error(
@@ -222,6 +224,14 @@ async def process_task_request():
 async def index():
     """Simple health check endpoint for Cloud Run."""
     return "Buildium Webhook Handler is running!", 200
+
+
+@app.after_serving
+async def close_clients():
+    """Close Google Cloud clients when the app stops."""
+    await app.secret_client.close()
+    await app.tasks_client.close()
+    await app.db.close()
 
 
 @app.after_serving
