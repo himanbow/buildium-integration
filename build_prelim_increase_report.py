@@ -385,7 +385,7 @@ def build_increase_report_pdf(
             ]
         )
 
-    building_col_widths = [w * inch for w in [2.5, 1.5, 2.0, 1.5, 1.8]]
+    building_col_widths = [w * inch for w in [3.3, 1.5, 1.8, 1.1, 1.6]]
     bt = Table(building_rows, colWidths=building_col_widths)
     bt.setStyle(
         TableStyle(
