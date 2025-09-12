@@ -58,7 +58,7 @@ async def process_task(task_id, task_type, account_id, event_name, account_info)
 
     client_id = account_info['api_client_id']
     secret_name = account_info['api_secret_name']
-    client_secret = get_secret(secret_name)
+    client_secret = await asyncio.to_thread(get_secret, secret_name)
     guideline_percentage = account_info['guideline_increase']
 
     # Prepare headers for API requests as expected by Buildium API
