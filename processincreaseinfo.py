@@ -458,20 +458,30 @@ async def createtask(headers, buildingid, session, date_label):
 
 # -------------------- summary helpers --------------------
 async def add_summary_page(summary_data, summary_writer, buildingname, countbuilding, date_label):
-    """Generate and append summary page(s) to the active summary writer.
+    """Generate summary page(s) and prepend them to existing lease pages.
 
-    Returns the full summary PDF bytes after appending the generated page(s).
+    The incoming ``summary_writer`` already holds the individual lease PDFs. This
+    function creates the distribution list page(s) and returns a combined PDF
+    where those pages appear *before* the lease documents.
     """
     try:
+        # Generate the summary page(s)
         summary_page_buffer = await generateN1notice.create_summary_page(
             summary_data, buildingname, countbuilding, date_label
         )
         summary_pdf = PdfReader(summary_page_buffer)
+
+        # Build a new writer that starts with the summary page(s)
+        combined_writer = PdfWriter()
         for page in summary_pdf.pages:
-            summary_writer.add_page(page)
+            combined_writer.add_page(page)
+
+        # Append all existing lease pages afterwards
+        for page in summary_writer.pages:
+            combined_writer.add_page(page)
 
         buffer = io.BytesIO()
-        summary_writer.write(buffer)
+        combined_writer.write(buffer)
         buffer.seek(0)
         return buffer.getvalue()
     except Exception as e:
