@@ -668,7 +668,7 @@ async def process(headers, increaseinfo, accountid):
                     )
 
                     # Small pause between buildings to further throttle task creation
-                    await asyncio.sleep(0.25)
+                    await asyncio.sleep(2)
     except Exception as e:
         logging.error(f"Error processing leases data: {e}")
 
