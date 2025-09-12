@@ -122,14 +122,24 @@ async def process_increase_notices(session, task_data, headers, guideline_percen
         logging.info("No eligible leases found for rent increases.")
         return
 
-    # Calculate the increases (assuming generate_increases is synchronous)
+    # Calculate the increases in a separate thread
     try:
-        increase_summary, numberofincreases, totalincrease = calculate_increase.generate_increases(leases_by_building, increase_effective_date, guideline_percentage)
+        increase_summary, numberofincreases, totalincrease = await asyncio.to_thread(
+            calculate_increase.generate_increases,
+            leases_by_building,
+            increase_effective_date,
+            guideline_percentage,
+        )
     except Exception as e:
         logging.error(f"Error calculating increases: {e}")
     logging.info(f"Increase summary created")
     try:
-        buildingjsonfile = await build_increase_json.buildincreasejson(increase_summary, increase_effective_date, client_secret)
+        buildingjsonfile = await asyncio.to_thread(
+            build_increase_json.buildincreasejson,
+            increase_summary,
+            increase_effective_date,
+            client_secret,
+        )
     except Exception as e:
         logging.error(f"Error building Json File {e}")
     # Update the task with the increase summary

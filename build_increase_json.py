@@ -50,7 +50,7 @@ def jsoncreation(perbuildinglist, client_secret):
 
     return encrypted_list
 
-async def buildincreasejson(increase_summary, increase_effective_date, client_secret):
+def buildincreasejson(increase_summary, increase_effective_date, client_secret):
     increase_effective_date = increase_effective_date.strftime('%Y-%m-%d')
     perbuildinglist = []
 
