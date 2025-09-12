@@ -10,13 +10,13 @@ import get_eligible_leases
 import calculate_increase
 import update_task_for_approval
 import asyncio
-import aiohttp
 from google.cloud import secretmanager, firestore
 import logging
 import build_increase_json
 import decodefile
 import processincreaseinfo
 import runlmrinterest
+from session_manager import session_manager
 
 
 
@@ -70,7 +70,8 @@ async def process_task(task_id, task_type, account_id, event_name, account_info)
 
     logging.info(f"Retrieved headers for Task: {task_id}")
 
-    async with aiohttp.ClientSession(timeout=update_task_for_approval.HTTP_TIMEOUT) as session:
+    session = await session_manager.get_session(account_id)
+    try:
         # Retrieve task data from get_tasks.py
         task_data = await get_tasks.get_task_data(session, task_id, headers)
 
@@ -105,6 +106,8 @@ async def process_task(task_id, task_type, account_id, event_name, account_info)
             logging.info(f"Task {task_id} History Update Detected")
             if "Increase Notices" in task_title:
                 await process_generate_notices(session, task_data, headers, guideline_percentage, client_secret, account_id)
+    finally:
+        await session_manager.release_session(account_id)
 
 async def process_increase_notices(session, task_data, headers, guideline_percentage, client_secret, account_id):
     """Handle Increase Notices task."""

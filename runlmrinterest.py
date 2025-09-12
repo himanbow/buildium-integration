@@ -2,6 +2,7 @@ from datetime import date as _date, timedelta, datetime, UTC
 import logging
 import aiohttp
 from collections import defaultdict
+from session_manager import session_manager
 
 from rate_limiter import semaphore, throttle
 
@@ -208,7 +209,8 @@ async def updatetask(task_data, headers, session, lmr_report_data: dict, month_l
 
 # ---------------- orchestrator ----------------
 async def lmrinterestprogram(task_data, headers, guideline_percentage: float):
-    async with aiohttp.ClientSession() as session:
+    session = await session_manager.get_session()
+    try:
         first_day, last_day, month_label, days_in_year = await getdates()
 
         # FIX: correct arg order
@@ -224,6 +226,8 @@ async def lmrinterestprogram(task_data, headers, guideline_percentage: float):
         taskupdated = await updatetask(task_data, headers, session, lmr_report_data, month_label)
         if taskupdated:
             logging.info(f"LMR Interest Task {task_data['Id']} updated.")
+    finally:
+        await session_manager.release_session()
 
 
 
