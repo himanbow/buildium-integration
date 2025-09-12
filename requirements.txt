@@ -5,6 +5,7 @@ PyPDF2
 reportlab
 google-cloud-secret-manager
 google-cloud-firestore
+google-cloud-tasks
 uvicorn
 python-dateutil
 cryptography

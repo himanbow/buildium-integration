@@ -6,8 +6,11 @@ import time
 import task_processor
 from google.cloud import secretmanager
 from google.cloud import firestore
+from google.cloud import tasks_v2
 import logging
 import asyncio
+import json
+import os
 from functools import lru_cache
 
 app = Quart(__name__)
@@ -19,7 +22,13 @@ logging.getLogger('quart.serving').setLevel(logging.DEBUG)
 
 # Initialize Google Cloud clients
 secret_client = secretmanager.SecretManagerServiceClient()
-db = firestore.Client(project="buildium-integration-v1")
+tasks_client = tasks_v2.CloudTasksClient()
+
+PROJECT_ID = os.environ.get("GCP_PROJECT", "buildium-integration-v1")
+QUEUE_LOCATION = os.environ.get("TASK_QUEUE_LOCATION", "us-central1")
+QUEUE_NAME = os.environ.get("TASK_QUEUE_NAME", "buildium-webhook")
+
+db = firestore.Client(project=PROJECT_ID)
 
 @lru_cache(maxsize=128)
 def get_secret(secret_name):
@@ -84,14 +93,6 @@ def verify_signature(request_body, signature, timestamp, secret_key):
     logging.info("Signature verified successfully.")
     return True
 
-async def process_task_in_background(task_id, task_type, account_id, event_name, account_info):
-    logging.info(f"Starting to process task: Task ID: {task_id}, Task Type: {task_type}, Event Name: {event_name}")
-    try:
-        await task_processor.process_task(task_id, task_type, account_id, event_name, account_info)
-        logging.info(f"Finished processing task: {task_id}")
-    except Exception as e:
-        logging.error(f"Error processing task {task_id}: {e}")
-
 @app.route('/webhook', methods=['POST'])
 async def handle_webhook():
     logging.info("Webhook received")
@@ -132,19 +133,47 @@ async def handle_webhook():
         event_name = payload.get('EventName')
         logging.info(f"Task ID: {task_id}, Task Type: {task_type}, Event Name: {event_name}")
 
-        # Kick off task processing in the background so the webhook can
-        # respond immediately. ``app.add_background_task`` schedules the
-        # work on the event loop without waiting for it to finish.
-        app.add_background_task(
-            process_task_in_background,
-            task_id, task_type, account_id, event_name, account_info,
-        )
-        logging.info("Task processing started in background")
+        parent = tasks_client.queue_path(PROJECT_ID, QUEUE_LOCATION, QUEUE_NAME)
+        task_payload = {
+            'task_id': task_id,
+            'task_type': task_type,
+            'account_id': account_id,
+            'event_name': event_name,
+            'account_info': account_info,
+        }
+        task = {
+            'http_request': {
+                'http_method': tasks_v2.HttpMethod.POST,
+                'url': request.host_url.rstrip('/') + '/tasks/process',
+                'headers': {'Content-Type': 'application/json'},
+                'body': json.dumps(task_payload).encode(),
+            }
+        }
+
+        await asyncio.to_thread(tasks_client.create_task, request={'parent': parent, 'task': task})
+        logging.info("Task enqueued to Cloud Tasks")
 
         return jsonify({'status': 'success'}), 200
     except Exception as e:
         logging.error(f"Error handling webhook: {e}")
         return jsonify({'error': 'Internal Server Error'}), 500
+
+@app.route('/tasks/process', methods=['POST'])
+async def process_task_request():
+    queue_header = request.headers.get('X-Cloud-Tasks-QueueName')
+    if queue_header != QUEUE_NAME:
+        logging.error(f"Invalid Cloud Tasks queue header: {queue_header}")
+        return "Forbidden", 403
+
+    payload = await request.get_json()
+    await task_processor.process_task(
+        payload.get('task_id'),
+        payload.get('task_type'),
+        payload.get('account_id'),
+        payload.get('event_name'),
+        payload.get('account_info'),
+    )
+    return '', 204
 
 @app.route('/', methods=['GET', 'POST'])
 async def index():
