@@ -529,6 +529,7 @@ async def process_building(
     countbuilding = 0
     current_summary_size = 0
     summary_parts = []  # list of (filename, bytes)
+    had_split = False
     size_limit = 15 * 1024 * 1024  # ~15MB
 
     # Per-lease processing -- concurrently generate & upload
@@ -585,9 +586,8 @@ async def process_building(
         ):
             summary_buffer = io.BytesIO()
             summary_writer.write(summary_buffer)
-            part_filename = (
-                f"Notices for {buildingname} {datelabel} Part {summary_index}.pdf"
-            )
+            had_split = True
+            part_filename = f"Part {summary_index}.pdf"
             part_bytes = summary_buffer.getvalue()
             part_path = os.path.join("/tmp", part_filename)
             async with aiofiles.open(part_path, "wb") as f:
@@ -608,9 +608,10 @@ async def process_building(
 
     # Finalize & upload building summary (if any non-ignored leases and not ignoring building)
     if summary_data and data.get("ignorebuilding") != "Y" and taskid:
-        part_filename = (
-            f"Notices for {buildingname} {datelabel} Part {summary_index}.pdf"
-        )
+        if had_split:
+            part_filename = f"Part {summary_index}.pdf"
+        else:
+            part_filename = f"Notices for {buildingname} {datelabel}.pdf"
 
         summary_bytes = await add_summary_page(
             summary_data,
