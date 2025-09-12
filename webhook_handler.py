@@ -182,7 +182,13 @@ async def handle_webhook():
 @app.route('/tasks/process', methods=['POST'])
 async def process_task_request():
     """Handle Cloud Tasks callbacks by delegating work to task_processor."""
-    queue_header = request.headers.get('X-Cloud-Tasks-QueueName')
+    # Cloud Tasks may include different queue name headers depending on the
+    # environment (Cloud Run vs. App Engine). Check all known variants.
+    queue_header = (
+        request.headers.get("X-Cloud-Tasks-QueueName")
+        or request.headers.get("X-CloudTasks-QueueName")
+        or request.headers.get("X-AppEngine-QueueName")
+    )
     if queue_header != QUEUE_NAME:
         logging.error(f"Invalid Cloud Tasks queue header: {queue_header}")
         return "Forbidden", 403
