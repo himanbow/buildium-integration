@@ -648,7 +648,7 @@ async def process_building(
             )
 
 # -------------------- main entry --------------------
-async def process(headers, increaseinfo, accountid):
+async def process(session, headers, increaseinfo, accountid):
     """Main orchestration: generate N1s, roll summaries, upload to leases & tasks."""
     counter = {"countall": 0}
     categoryid = None
@@ -656,47 +656,46 @@ async def process(headers, increaseinfo, accountid):
     count_lock = asyncio.Lock()
 
     try:
-        async with aiohttp.ClientSession() as session:
-            # Determine date label & category once based on the first available lease
-            for buildingdata in increaseinfo:
-                for _, data in buildingdata.items():
-                    if data.get("lease_info"):
-                        first_lease_to = _safe_get(
-                            data["lease_info"][0], ["renewal", "LeaseToDate"]
-                        )
-                        if first_lease_to:
-                            datelabel = datetime.strptime(
-                                first_lease_to, "%Y-%m-%d"
-                            ).strftime("%B %d, %Y")
-                        else:
-                            datelabel = datetime.utcnow().strftime("%B %d, %Y")
-                        categoryid = await category(headers, session, datelabel)
-                        break
-                if datelabel:
-                    break
-
-            # Process buildings sequentially to avoid overwhelming the
-            # Buildium API with task creation bursts.  The per-request
-            # rate limiters still apply, but spacing out buildings helps
-            # keep task creation smooth.
-            for buildingdata in increaseinfo:
-                for buildingid, data in buildingdata.items():
-                    if not data.get("lease_info"):
-                        continue
-
-                    await process_building(
-                        buildingid,
-                        data,
-                        headers,
-                        session,
-                        datelabel,
-                        categoryid,
-                        counter,
-                        count_lock,
+        # Determine date label & category once based on the first available lease
+        for buildingdata in increaseinfo:
+            for _, data in buildingdata.items():
+                if data.get("lease_info"):
+                    first_lease_to = _safe_get(
+                        data["lease_info"][0], ["renewal", "LeaseToDate"]
                     )
+                    if first_lease_to:
+                        datelabel = datetime.strptime(
+                            first_lease_to, "%Y-%m-%d"
+                        ).strftime("%B %d, %Y")
+                    else:
+                        datelabel = datetime.utcnow().strftime("%B %d, %Y")
+                    categoryid = await category(headers, session, datelabel)
+                    break
+            if datelabel:
+                break
 
-                    # Small pause between buildings to further throttle task creation
-                    await asyncio.sleep(2)
+        # Process buildings sequentially to avoid overwhelming the
+        # Buildium API with task creation bursts.  The per-request
+        # rate limiters still apply, but spacing out buildings helps
+        # keep task creation smooth.
+        for buildingdata in increaseinfo:
+            for buildingid, data in buildingdata.items():
+                if not data.get("lease_info"):
+                    continue
+
+                await process_building(
+                    buildingid,
+                    data,
+                    headers,
+                    session,
+                    datelabel,
+                    categoryid,
+                    counter,
+                    count_lock,
+                )
+
+                # Small pause between buildings to further throttle task creation
+                await asyncio.sleep(2)
     except Exception as e:
         logging.error(f"Error processing leases data: {e}")
 

@@ -10,6 +10,7 @@ import get_eligible_leases
 import calculate_increase
 import update_task_for_approval
 import asyncio
+import aiohttp
 from google.cloud import secretmanager, firestore
 import logging
 import build_increase_json
@@ -69,48 +70,49 @@ async def process_task(task_id, task_type, account_id, event_name, account_info)
 
     logging.info(f"Retrieved headers for Task: {task_id}")
 
-    # Retrieve task data from get_tasks.py
-    task_data = await get_tasks.get_task_data(task_id, headers)
+    async with aiohttp.ClientSession(timeout=update_task_for_approval.HTTP_TIMEOUT) as session:
+        # Retrieve task data from get_tasks.py
+        task_data = await get_tasks.get_task_data(session, task_id, headers)
 
-    if not task_data:
-        logging.error(f"Task data not found for TaskId: {task_id}")
-        return
+        if not task_data:
+            logging.error(f"Task data not found for TaskId: {task_id}")
+            return
 
-    category_name = task_data.get('Category', {}).get('Name')
-    if not category_name:
-        logging.error(f"Task {task_id} category missing. Stopping processing.")
-        return
-    if category_name != "System Tasks":
-        logging.info(f"Task {task_id} is not a System Task. Stopping processing.")
-        return
+        category_name = task_data.get('Category', {}).get('Name')
+        if not category_name:
+            logging.error(f"Task {task_id} category missing. Stopping processing.")
+            return
+        if category_name != "System Tasks":
+            logging.info(f"Task {task_id} is not a System Task. Stopping processing.")
+            return
 
-    task_title = task_data['Title']
-    logging.info(f"Task title: {task_title}")
+        task_title = task_data['Title']
+        logging.info(f"Task title: {task_title}")
 
-    # Process the task based on event type and title
-    if event_name == 'Task.Created':
-        if "Increase Notices" in task_title:
-            await process_increase_notices(task_data, headers, guideline_percentage, client_secret, account_id)
-        elif "Increase Letters" in task_title:
-            await process_increase_letters(task_data, headers)
-        elif "LMR Interest" in task_title:
-            #Program no ready
-            # await runlmrinterest.lmrinterestprogram(task_data, headers, guideline_percentage)
-            logging.info(f"Running LMR Interest Program for {account_id}")
-        else:
-            logging.error(f"Unknown task type for TaskId: {task_id}")
-    elif event_name == 'Task.History.Created':
-        logging.info(f"Task {task_id} History Update Detected")
-        if "Increase Notices" in task_title:
-            await process_generate_notices(task_data, headers, guideline_percentage, client_secret, account_id)
+        # Process the task based on event type and title
+        if event_name == 'Task.Created':
+            if "Increase Notices" in task_title:
+                await process_increase_notices(session, task_data, headers, guideline_percentage, client_secret, account_id)
+            elif "Increase Letters" in task_title:
+                await process_increase_letters(task_data, headers)
+            elif "LMR Interest" in task_title:
+                #Program no ready
+                # await runlmrinterest.lmrinterestprogram(task_data, headers, guideline_percentage)
+                logging.info(f"Running LMR Interest Program for {account_id}")
+            else:
+                logging.error(f"Unknown task type for TaskId: {task_id}")
+        elif event_name == 'Task.History.Created':
+            logging.info(f"Task {task_id} History Update Detected")
+            if "Increase Notices" in task_title:
+                await process_generate_notices(session, task_data, headers, guideline_percentage, client_secret, account_id)
 
-async def process_increase_notices(task_data, headers, guideline_percentage, client_secret, account_id):
+async def process_increase_notices(session, task_data, headers, guideline_percentage, client_secret, account_id):
     """Handle Increase Notices task."""
     logging.info("Processing Increase Notices")
 
     # Call gather_leayg_for_increase asynchronously
     try:
-        leases_by_building, increase_effective_date = await get_eligible_leases.gather_leases_for_increase(headers, guideline_percentage)
+        leases_by_building, increase_effective_date = await get_eligible_leases.gather_leases_for_increase(session, headers, guideline_percentage)
         logging.info(f"Fetched leases for increase.")
     except Exception as e:
         logging.error(f"Error fetching leases: {e}")
@@ -133,6 +135,7 @@ async def process_increase_notices(task_data, headers, guideline_percentage, cli
     # Update the task with the increase summary
     try:
         await update_task_for_approval.update_task(
+            session,
             task_data,
             increase_summary,
             increase_effective_date,
@@ -154,15 +157,15 @@ async def process_lmr_interest(task_data, headers):
     """Handle LMR Interest task."""
     logging.info("Processing LMR Interest")
 
-async def process_generate_notices(task_data, headers, guideline_percentage, client_secret, account_id):
+async def process_generate_notices(session, task_data, headers, guideline_percentage, client_secret, account_id):
     """Generate and dispatch rent increase notices when a task is completed."""
     if task_data['TaskStatus'] == "Completed":
         logging.info("Processing Generation of Increase Notices")
-        increaseinfo = await decodefile.decode(headers, task_data, client_secret)
+        increaseinfo = await decodefile.decode(session, headers, task_data, client_secret)
         if not increaseinfo:
             logging.error("decode() returned no data; aborting this task.")
             return
-        await processincreaseinfo.process(headers, increaseinfo, account_id)
+        await processincreaseinfo.process(session, headers, increaseinfo, account_id)
 
     else:
         logging.info("Task Update Not a Completed Task")
