@@ -11,15 +11,14 @@ import hashlib
 import base64
 import time
 import task_processor
-from google.cloud import secretmanager
-from google.cloud import firestore
+from google.cloud.secretmanager_v1 import SecretManagerServiceAsyncClient
+from google.cloud.firestore_v1 import AsyncClient as FirestoreAsyncClient
 from google.cloud import tasks_v2
 from google.api_core.exceptions import NotFound
 import logging
 import asyncio
 import json
 import os
-from functools import lru_cache
 from session_manager import session_manager
 
 app = Quart(__name__)
@@ -30,36 +29,41 @@ logging.getLogger('quart.app').setLevel(logging.DEBUG)
 logging.getLogger('quart.serving').setLevel(logging.DEBUG)
 
 # Initialize Google Cloud clients
-secret_client = secretmanager.SecretManagerServiceClient()
-tasks_client = tasks_v2.CloudTasksClient()
+secret_client = SecretManagerServiceAsyncClient()
+tasks_client = tasks_v2.CloudTasksAsyncClient()
 
 PROJECT_ID = os.environ.get("GCP_PROJECT", "buildium-integration-v1")
 QUEUE_LOCATION = os.environ.get("TASK_QUEUE_LOCATION", "us-central1")
 QUEUE_NAME = os.environ.get("TASK_QUEUE_NAME", "Worker")
 
-db = firestore.Client(project=PROJECT_ID)
+db = FirestoreAsyncClient(project=PROJECT_ID)
 
-@lru_cache(maxsize=128)
-def get_secret(secret_name):
+_secret_cache = {}
+async def get_secret(secret_name):
     """Retrieve the secret key from Google Secret Manager."""
-    project_id = "buildium-integration-v1"
-    name = f"projects/{project_id}/secrets/{secret_name}/versions/latest"
-    response = secret_client.access_secret_version(name=name)
+    if secret_name in _secret_cache:
+        return _secret_cache[secret_name]
+    name = f"projects/{PROJECT_ID}/secrets/{secret_name}/versions/latest"
+    response = await secret_client.access_secret_version(request={"name": name})
     secret = response.payload.data.decode("UTF-8")
+    _secret_cache[secret_name] = secret
     return secret
 
 
-@lru_cache(maxsize=128)
-def get_account_info(account_id):
+_account_info_cache = {}
+async def get_account_info(account_id):
     """Retrieve account information from Firestore based on AccountId."""
+    if account_id in _account_info_cache:
+        return _account_info_cache[account_id]
     try:
         logging.info(f"Fetching account info for Account ID: {account_id}")
         doc_ref = db.collection('buildium_accounts').document(str(account_id))
-        doc = doc_ref.get()  # Fetch the document
-
+        doc = await doc_ref.get()
         if doc.exists:
             logging.info(f"Account info found for Account ID: {account_id}")
-            return doc.to_dict()
+            data = doc.to_dict()
+            _account_info_cache[account_id] = data
+            return data
         else:
             logging.info(f"No account info found for Account ID: {account_id}")
             return None
@@ -124,15 +128,27 @@ async def handle_webhook():
         account_id = payload.get('AccountId')
         logging.info(f"Account ID: {account_id}")
 
-        # Run Firestore lookup in a thread to avoid blocking the event loop
-        account_info = await asyncio.to_thread(get_account_info, account_id)
+        account_info_task = asyncio.create_task(get_account_info(account_id))
+
+        async def secret_lookup():
+            info = await account_info_task
+            if not info:
+                raise ValueError("Account not found")
+            return await get_secret(info['secret_name'])
+
+        secret_task = asyncio.create_task(secret_lookup())
+        try:
+            account_info, secret_key = await asyncio.gather(account_info_task, secret_task)
+        except Exception as e:
+            for t in (account_info_task, secret_task):
+                if not t.done():
+                    t.cancel()
+            logging.error(f"Error retrieving account info or secret: {e}")
+            return jsonify({'error': 'Account lookup failed'}), 400
+
         if not account_info:
             logging.error("Account not found")
             return jsonify({'error': 'Account not found'}), 400
-
-        secret_name = account_info['secret_name']
-        # Secret Manager access can also block, so run it in a thread
-        secret_key = await asyncio.to_thread(get_secret, secret_name)
 
         if not verify_signature(request_body, signature, timestamp, secret_key):
             logging.error("Invalid signature")
@@ -161,9 +177,7 @@ async def handle_webhook():
             }
         }
         try:
-            await asyncio.to_thread(
-                tasks_client.create_task, request={"parent": parent, "task": task}
-            )
+            await tasks_client.create_task(request={"parent": parent, "task": task})
             logging.info("Task enqueued to Cloud Tasks")
         except NotFound as e:
             logging.error(
