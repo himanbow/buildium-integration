@@ -75,22 +75,19 @@ def _short_name(name: str | None, limit: int = 20) -> str:
     return s if len(s) <= limit else s[:limit] + "."
 
 def _fetch_logo_bytes(logo_source: str | None) -> bytes | None:
-    ## Removing Logo for troubleshooting
-    
-    return None
-    
-    # if not logo_source:
-    #     return None
-    # try:
-    #     if logo_source.lower().startswith(("http://", "https://")):
-    #         req = Request(logo_source, headers={"User-Agent": "Mozilla/5.0"})
-    #         with urlopen(req, timeout=10) as resp:
-    #             return resp.read()
-    #     else:
-    #         with open(logo_source, "rb") as f:
-    #             return f.read()
-    # except (HTTPError, URLError, OSError, ValueError):
-    #     return None
+
+    if not logo_source:
+        return None
+    try:
+        if logo_source.lower().startswith(("http://", "https://")):
+            req = Request(logo_source, headers={"User-Agent": "Mozilla/5.0"})
+            with urlopen(req, timeout=10) as resp:
+                return resp.read()
+        else:
+            with open(logo_source, "rb") as f:
+                return f.read()
+    except (HTTPError, URLError, OSError, ValueError):
+        return None
 
 def _prepare_logo(logo_source: str | None,
                   box_w_in: float = 1.6,
