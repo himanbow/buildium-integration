@@ -34,7 +34,7 @@ tasks_client = tasks_v2.CloudTasksClient()
 
 PROJECT_ID = os.environ.get("GCP_PROJECT", "buildium-integration-v1")
 QUEUE_LOCATION = os.environ.get("TASK_QUEUE_LOCATION", "us-central1")
-QUEUE_NAME = os.environ.get("TASK_QUEUE_NAME", "buildium-webhook")
+QUEUE_NAME = os.environ.get("TASK_QUEUE_NAME", "Worker")
 
 db = firestore.Client(project=PROJECT_ID)
 
