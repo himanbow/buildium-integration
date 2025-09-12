@@ -150,15 +150,15 @@ async def handle_webhook():
             'event_name': event_name,
             'account_info': account_info,
         }
+        base_url = request.url_root.replace("http://", "https://").rstrip("/")
         task = {
-            'http_request': {
-                'http_method': tasks_v2.HttpMethod.POST,
-                'url': request.host_url.rstrip('/') + '/tasks/process',
-                'headers': {'Content-Type': 'application/json'},
-                'body': json.dumps(task_payload).encode(),
+            "http_request": {
+                "http_method": tasks_v2.HttpMethod.POST,
+                "url": f"{base_url}/tasks/process",
+                "headers": {"Content-Type": "application/json"},
+                "body": json.dumps(task_payload).encode(),
             }
         }
-
         try:
             await asyncio.to_thread(
                 tasks_client.create_task, request={"parent": parent, "task": task}
