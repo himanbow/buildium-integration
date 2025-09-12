@@ -1,3 +1,10 @@
+"""Utilities for processing Buildium tasks dispatched via Cloud Tasks.
+
+Functions in this module orchestrate calls to other helpers to update tasks,
+generate notices, and perform related operations. Extra documentation aims to
+clarify responsibilities and ease future maintenance.
+"""
+
 import get_tasks
 import get_eligible_leases
 import calculate_increase
@@ -148,6 +155,7 @@ async def process_lmr_interest(task_data, headers):
     logging.info("Processing LMR Interest")
 
 async def process_generate_notices(task_data, headers, guideline_percentage, client_secret, account_id):
+    """Generate and dispatch rent increase notices when a task is completed."""
     if task_data['TaskStatus'] == "Completed":
         logging.info("Processing Generation of Increase Notices")
         increaseinfo = await decodefile.decode(headers, task_data, client_secret)

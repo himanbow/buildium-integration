@@ -1,4 +1,5 @@
-# main.py
+"""Entry point for running the Quart webhook service locally."""
+
 from webhook_handler import app
 
 if __name__ == "__main__":
