@@ -404,34 +404,35 @@ async def leaserenewalingored(headers, leaseid, lease, session):
 # -------------------- eviction toggle --------------------
 async def setevictionstatus(leaseid, eviction: bool, session, headers) -> bool:
     """Set IsEvictionPending to the supplied boolean; return True/False for success."""
-    try:
-        url = f"https://api.buildium.com/v1/leases/{leaseid}"
-        async with semaphore, throttle:
-            async with session.get(url, headers=headers) as response:
-                if response.status != 200:
-                    logging.error(f"GET lease {leaseid} failed: {response.status} {await response.text()}")
-                    return False
-                data = await response.json()
+    ...
+    # try:
+    #     url = f"https://api.buildium.com/v1/leases/{leaseid}"
+    #     async with semaphore, throttle:
+    #         async with session.get(url, headers=headers) as response:
+    #             if response.status != 200:
+    #                 logging.error(f"GET lease {leaseid} failed: {response.status} {await response.text()}")
+    #                 return False
+    #             data = await response.json()
 
-        payload = {
-            "LeaseType": data["LeaseType"],
-            "UnitId": data['UnitId'],
-            "LeaseFromDate": data['LeaseFromDate'],
-            "LeaseToDate": data['LeaseToDate'],
-            "IsEvictionPending": eviction,
-            "AutomaticallyMoveOutTenants": False
-        }
-        async with semaphore, throttle:
-            async with session.put(url, json=payload, headers=headers) as response:
-                if response.status == 200:
-                    logging.info(f"Eviction flag set to {eviction} for lease {leaseid}.")
-                    return True
-                else:
-                    logging.error(f"Error setting eviction for {leaseid}: {response.status} {await response.text()}")
-                    return False
-    except Exception as e:
-        logging.error(f"Exception in setevictionstatus for {leaseid}: {e}")
-        return False
+    #     payload = {
+    #         "LeaseType": data["LeaseType"],
+    #         "UnitId": data['UnitId'],
+    #         "LeaseFromDate": data['LeaseFromDate'],
+    #         "LeaseToDate": data['LeaseToDate'],
+    #         "IsEvictionPending": eviction,
+    #         "AutomaticallyMoveOutTenants": False
+    #     }
+    #     async with semaphore, throttle:
+    #         async with session.put(url, json=payload, headers=headers) as response:
+    #             if response.status == 200:
+    #                 logging.info(f"Eviction flag set to {eviction} for lease {leaseid}.")
+    #                 return True
+    #             else:
+    #                 logging.error(f"Error setting eviction for {leaseid}: {response.status} {await response.text()}")
+    #                 return False
+    # except Exception as e:
+    #     logging.error(f"Exception in setevictionstatus for {leaseid}: {e}")
+    #     return False
 
 # -------------------- non-recursive lease renewals with retries --------------------
 async def leaserenewals(headers, leaseid, lease, session, max_retries: int = 3):
@@ -528,7 +529,6 @@ async def createtask(headers, buildingid, session, date_label):
                     return None
                 rental = await response.json()
                 userid = _safe_get(rental, ['RentalManager', 'Id'])
-                userid = 352081
                 buildingname = rental.get('Name')
 
         # Find/create task category 'Increase Notices'
